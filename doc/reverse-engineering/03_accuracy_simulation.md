@@ -134,13 +134,30 @@ with SessionFromConfig(cfg, allow_other_keys=True) as s:
 - `munc/bcm/bcm_layers.py` の docstring: "to be run with the **Boreas Compute Model**"
 - `munc/bcm/bcm_utils.py`: `"Run BCM validation"`
 
-`munc/bcm/` は ONNX の `Conv`/`Linear` ノードを `BCMConv2d`/`BCMLinear`（`bcm_layers.py`）に置き換え、ノード属性で指定された MMA（Matrix-Multiply-Accumulate）クラスで `dot` 演算を実行する仕組み。`convert_convs_to_bcm.py`（`munc/ops/`）がこの変換を行う。artifact 内のステージ名 `on_chip_1_bcm.onnx`（GEN2 コンパイル出力）の "bcm" はこの Boreas Compute Model 表現を指すと考えられる[推測: artifact 生成が `munc/_artifact/` 経由であることとの整合による推定]。
+`munc/bcm/` は ONNX の `Conv`/`Linear` ノードを `BCMConv2d`/`BCMLinear`（`bcm_layers.py`）に置き換える。`convert_convs_to_bcm.py`（`munc/ops/`）がこの変換を行う。artifact 内のステージ名 `on_chip_1_bcm.onnx`（GEN2 コンパイル出力）の "bcm" はこの Boreas Compute Model 表現を指すと考えられる[推測: artifact 生成が `munc/_artifact/` 経由であることとの整合による推定]。
 
 > Compiler コンテナ側（`vnnort`）に "BCM" の文字列が存在しないのは、Compiler コンテナがコンパイル・PPA 推定のバックエンドであり、BCM モデルは SDK コンテナ側（学習・精度評価）だけで使われるためと考えられる。
 
-## A.7 BCM モデル階層（精度忠実度）
+### A.6.1 BCM 層の内部構造 — 「アナログ MAC」と「デジタルデータパス」の2段（重要）
 
-`munc/bcm/bcm_models/` に、忠実度の異なる 6 種類のアナログ MAC モデルが実装されている。ノード属性の `mma_class`（FACTORY_NAME）で選択:
+**BCM 層（`BCMConv2d`/`BCMLinear`, 親クラス `BCMMMAOp`）は、アナログ MAC モデル単体ではなく、アナログ+デジタルの2段構成である**。`BCMMMAOp.forward`（`bcm_layers.py:85-103`）の処理順:
+
+```
+① アナログ MAC:  y = self._mma.dot(x)                                    # self._mma = mma_class インスタンス（A.7）
+② デジタル後処理: y = self.digital_datapath.compute(y, dsf_mult, dsf_shft, activation)  # DSF スケール(乗算/右シフト) + 活性化
+```
+
+- `self._mma`（= `mma_class` のインスタンス, `bcm_layers.py:52`）が **①アナログ行列積（ACE）部分**を担う。これが A.7 で選択する 6 階層のモデル。
+- `self.digital_datapath`（`ace_digital_datapath_factory`, `bcm_layers.py:27`）が **②デジタル側データパス**（DSF = Digital Scale Factor による乗算・右シフト、活性化関数適用）を担う。`SALUDatapathInt8` もこの層に属する。
+- 符号付き入力の場合は正負を分離して重みを複製する差動処理も BCM 層側で行う（`bcm_layers.py:90-93`）。
+
+したがって **BCM 層 ⊋ アナログ MAC モデル**（BCM 層はアナログ MAC を内包しつつ、その前後のデジタル演算も含む）。「BCM = アナログ MAC そのもの」ではなく「BCM = ACE のアナログ MAC を `mma_class` に委譲しつつ、デジタルデータパスと組み合わせて `Conv`/`Linear` 層全体をハードウェア忠実に再現する層」が正確。次の A.7 が扱う 6 階層は、この①の部分（`mma_class`）の忠実度バリエーションである。
+
+## A.7 `mma_class` のアナログ MAC モデル階層（精度忠実度）
+
+> ここで扱う 6 種類は **BCM 層全体ではなく、A.6.1 の①アナログ MAC 部分（`self._mma` = `mma_class`）の忠実度バリエーション**である。②デジタルデータパス（DSF スケール・活性化）は `mma_class` に依らず共通。
+
+`munc/bcm/bcm_models/` に、忠実度の異なる 6 種類のアナログ MAC モデルが実装されている。BCM 層はノード属性で指定された `mma_class`（FACTORY_NAME）を `self._mma` として生成し、その `dot()` を①で呼ぶ:
 
 | FACTORY_NAME | ファイル | モデル化する現象 | 位置づけ |
 |---|---|---|---|
