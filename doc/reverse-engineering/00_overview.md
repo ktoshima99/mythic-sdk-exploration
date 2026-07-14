@@ -65,46 +65,45 @@ SDK 内部では旧社名 **videantis** 由来の `vid*` プレフィックス�
 
 凡例: 【S】=SDKコンテナで実行  【C】=Compilerコンテナで実行
 
+**重要**: 精度シミュレーションとコンパイルは直列ではなく、**再学習が生成する学習済み ONNX（`trained.onnx`）から並行して分岐する**枝である。精度シミュ（`eval_trained`）はコンパイルの前提ではなく、学習結果を評価する末端の枝。コンパイル（`to_acm`→`create_artifact`）も同じ `trained.onnx` を独立に入力する。
+
 ```
 ┌─ 再学習 【S】(mythic-model-zoo/*/train.py, 未解析) ───────────┐
-│  データセット + FP32 ONNX  →  学習済 ONNX (data/trained.onnx) │
+│  データセット + FP32 ONNX                                     │
+│   → to_structural → to_training → train(アナログaware再学習)  │
+│  出力: 学習済 ONNX (data/trained.onnx)                        │
 └──────────────────────────────────┬───────────────────────┘
-                                    │
-┌─ 精度シミュ【S】本体+【C】部品 [doc 03] ─────────────────────┐
-│ eval_trained(=eval_onnx_step) → make_torch_net()で           │
-│   BCM/ACEアナログモデル(6階層の忠実度)をforwardに注入          │
-│ ノイズ: 重みプログラミング誤差+温度ドリフト+ADC熱雑音等         │
-│   (munc/_pytorch/noise.py, munc/bcm/bcm_models/)              │
-│ 実データセット(ImageNet/COCO/nuScenes等)でHF Trainer.evaluate()│
-│ (モンテカルロ実行時) NIST片側許容区間で保証精度を算出           │
-└──────────────────────────────────┬───────────────────────┘
-                                    │ eval後 to_acm→create_artifact
-┌─ コンパイル [doc 01] ─────────────▼───────────────────────┐
-│  学習済ONNX                                                  │
-│   → 最適化: 標準ONNXオペ → com.videantis の vidConv へ書換    │
-│           (MatMul/Gemm/Attention も Conv=行列積に統一)        │
-│   → 量子化: 8bit対称 power-of-two 固定小数点 (max_exponent)   │
-│           重みper-channel / bias 16bit / 最終層per-tensor    │
-│   → .vidir (CapnProto) エクスポート                          │
-│   → dnn_compiler(バイナリ/auto_partition): アナログ/デジタル  │
-│           振り分け=IPUパーティション分割(Denali/Digital)      │
-│   → vnnmap(バイナリ): ACEタイル配置・BitSpreading・           │
-│           NVM書込み計画 → .vci                                │
-│   → vnncodegen/vnnrtgen: → .vcnn → ランタイムバイナリ         │
-│                                                              │
-│  出力物: compiler_ready_artifact/                            │
-│    off_chip_0 → on_chip_1_bcm(ACE) → off_chip_2 の3ステージ   │
-└──────────────────────────────────┬───────────────────────┘
-                                    │
-┌─ PPA推定【C】[doc 02] ────────────▼───────────────────────┐
-│ 入力: perf_trace_dump.h5 + vnn JSON                          │
-│ 性能: ボトルネックmax(ACEクリティカルパス, SRAM r/w, SIMD)     │
-│ 電力: 1推論エネルギー×fps / 面積: 1タイル42.16mm²×タイル数     │
-│ 出力: latency/fps/power/area                                 │
-└──────────────────────────────────────────────────────────────┘
+                                    │  学習済 trained.onnx
+                    ┌───────────────┴────────────────┐
+                    │ (分岐: 同じ trained.onnx を独立に入力)  │
+                    ▼                                 ▼
+┌─ 【枝A】精度シミュ 【S】本体+【C】部品 [doc03] ┐  ┌─ 【枝B】コンパイル [doc01] 【S→C】───────────┐
+│ eval_trained(=eval_onnx_step)                │  │ to_acm → create_artifact → compile          │
+│  → make_torch_net() で BCM/ACE アナログ       │  │  → 最適化: 標準ONNXオペ→com.videantis vidConv │
+│    モデル(6階層)を forward に注入              │  │    (MatMul/Gemm/Attention も Conv=行列積に統一)│
+│ ノイズ: 重みプログラミング誤差+温度ドリフト     │  │  → 量子化: 8bit対称 power-of-two 固定小数点     │
+│   +ADC熱雑音 (noise.py, bcm/bcm_models/)     │  │    (max_exp / 重みper-ch / bias16bit)         │
+│ 実データセットで HF Trainer.evaluate()        │  │  → .vidir → dnn_compiler(auto_partition):     │
+│ (モンテカルロ時) NIST片側許容区間で保証精度    │  │    アナログ/デジタル振り分け(Denali/Digital)   │
+│                                              │  │  → vnnmap: ACEタイル配置/BitSpreading/NVM書込 │
+│ 出力: mAP / NDS / accuracy 等の精度メトリクス  │  │  → vnncodegen/vnnrtgen → ランタイムバイナリ    │
+│                                              │  │ 出力: compiler_ready_artifact/               │
+│ ※コンパイルの前提ではない（評価専用の末端）   │  │  off_chip_0→on_chip_1_bcm(ACE)→off_chip_2    │
+└──────────────────────────────────────────────┘  └──────────────────────────┬──────────────────┘
+                                                                              │ compiled artifact
+                                                   ┌──────────────────────────▼──────────────────┐
+                                                   │─ PPA推定 【C】[doc02] ────────────────────────│
+                                                   │ 入力: perf_trace_dump.h5 + vnn JSON           │
+                                                   │ 性能: ボトルネックmax(ACEクリティカルパス,SRAM,SIMD)│
+                                                   │ 電力: 1推論エネルギー×fps / 面積: タイル数×42mm² │
+                                                   │ 出力: latency / fps / power / area            │
+                                                   └───────────────────────────────────────────────┘
 ```
 
-凡例: `eval_trained` は精度シミュ内の1ステップ名（step_type=`eval_onnx`）。コンパイルへの入力は精度シミュとは独立に `to_training`→`train` 済みの ONNX からも到達可（両者は `mythic-model-zoo` 内の同じステップ列 `to_structural→to_training→train→eval_trained→...→to_acm→create_artifact→compile` に統合されている、doc 03 Part A.3 参照）。
+補足:
+- **PPA 推定はコンパイルの下流**（コンパイル成果物 `perf_trace_dump.h5` / vnn JSON を入力とする）であり、これは直列関係で正しい。
+- `mythic-model-zoo` 内では全ステップが 1 つのステップ列 `to_structural→to_training→train→eval_trained→…→to_acm→create_artifact→compile` に定義されているが、`eval_trained`（枝A）と `to_acm`/`create_artifact`（枝B）は**互いに依存せず、どちらも `train` の出力 `trained.onnx` を入力とする独立した枝**である（doc 03 Part A.3 / A.12 参照）。順番に並んでいるのは列挙上の都合で、データ依存ではない。
+- `eval_trained` は step_type=`eval_onnx`（精度シミュ内の1ステップ名）。
 
 ---
 
