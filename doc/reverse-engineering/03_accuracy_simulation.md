@@ -286,6 +286,63 @@ structural.onnx --to_training--> mythic.onnx(学習可能Mythic Nodeモデル)
 - **`create_training_artifact_step`**: `sess.get_bcm_to_artifact_conversion_ops()` で `SwitchBCM(digitalmodel)`・`verify_compiler_model`（コンパイラ整合検証）等を実行し、`munc._artifact.artifact_writer.Artifact` で tar.gz を書き出す。
 - **off/on-chip 遷移の整形**: `munc/_artifact/_prepare_off_on_chip_transitions.py`（`collect_data_formats`）が、グラフ分割後の各ポートのデータ形式（型・レイアウト）を突き合わせ、不一致な遷移エッジに変換を挿入する。これが GEN2 コンパイル出力の `off_chip_0`/`on_chip_1_bcm`/`off_chip_2` の境界整形に対応する[推測: doc 01 で確認したコンパイラ側パーティショニングとの接続点]。
 
+## A.13 推論結果の可視化・デモ動画生成（`bevformer_inference.py`）
+
+`mythic-model-zoo/mythic/model_zoo/bevformer/bevformer_inference.py`（CLI 定義, 459 行）+ `bevformer_inference_impl.py`（実処理, 800 行）+ `bevformer_lib/custom_utils/`（データロード・推論実行・描画・書き出し, 合計約 4,400 行）。BEVFormer Retraining Guide §1.15 の「Generating Inference Videos」に対応する。ソースはホスト `_extracted_sdk/bevformer_inference_support/` に抽出済み。
+
+### A.13.1 4 つのサブコマンド（共通パイプラインをバックエンドだけ差し替え）
+
+| サブコマンド | 入力モデル形式 | 推論実行関数 | 用途 |
+|---|---|---|---|
+| `pytorch` | `.pth` チェックポイント | `pth_run_frame`（`model.forward_onnx()` を直接呼ぶ純 PyTorch 経路） | FP32 ベースライン |
+| `onnx` | `fp32-*.onnx` / `structural-*.onnx` | `onnx_run_frame`（`onnxruntime.InferenceSession.run()`） | Mythic 独自オペ非対応。ロード失敗時は `torchnet` サブコマンドを提案するエラーを出す（`load_onnx_session_or_suggest_torchnet`） |
+| `torchnet` | `mythic-*.onnx` / `trained-*.onnx` / `post-training-processed-*.onnx` | `torchnet_run_frame`（`munc.TorchNet`。**A.6-A.10 の BCM アナログノイズモデルが forward に乗る経路**） | アナログノイズ込みの精度シミュレーション結果を動画で確認 |
+| `ground-truth` | 不要（config のみ） | 推論なし。nuScenes の正解ラベルを直接描画 | 推論結果との比較用リファレンス動画 |
+
+`torchnet` サブコマンドの内部は `build_torchnet_from_onnx()`（`custom_utils/inference.py:114-184`）が Hydra 設定（`configs/bevformer/bevformer_tiny.yaml` の `default_torchnet`）を読み `SessionFromConfig(...).make_torch_net()` を呼ぶ——これは A.4 で確認した `eval_trained` と**同じ `make_torch_net()` 経路**であり、任意で `.pth` チェックポイントを `strict=False` でオーバーレイできる（TorchNet のサブモジュール名と生 `.pth` のキーが異なりうるため）。
+
+### A.13.2 処理フロー（`run_video_pipeline` → `run_inference_loop`, `bevformer_inference_impl.py:313`）
+
+```
+① nuScenes データセット読み込み（--data-type samples=2Hz keyframes / sweeps=~12Hz）
+      ↓
+② シーン単位でフレームをループ（run_inference_loop, custom_utils/inference.py:575）
+      ↓
+③ 各フレームでモデル推論 → (bev_embed, cls_scores, bbox_preds)
+      backend別: pth_run_frame / onnx_run_frame / torchnet_run_frame
+      ↓
+④ post_process（score_thr でフィルタ）→ 3D bbox 結果（boxes_3d/scores_3d/labels_3d）
+      ↓
+⑤ visualize_frame で描画（visualization.py:890）→ 1 枚の合成画像
+      ↓
+⑥ ResultWriter が JPEG 保存 → シーン終了時に OpenCV で MP4 にエンコード
+```
+
+**時系列の一貫性**（`TemporalState`, `process_frame` 内 `bevformer_inference_impl.py:472-527`): 前フレームの `bev_embed` を次フレームの `prev_bev` として渡す。シーンの最初のフレームだけ `prev_bev` をゼロ・`use_prev_bev=False` にリセットする（BEVFormer の TemporalSelfAttention が `prev_bev=None` 分岐にマッチするよう `get_prev_bev` で明示的にゼロを返す設計、`custom_utils/inference.py:253-268`）。3 バックエンド（pth/onnx/torchnet）は入出力の型・軸順を統一しており（`cls`/`box` はデコーダ層を先頭に転置）差し替え可能。
+
+### A.13.3 描画（`visualize_frame`, `visualization.py:890-1011`）
+
+1 フレームにつき:
+- **6 カメラ画像を 2×3 グリッドに配置**（前方 3 枚 + 後方 3 枚は `cv2.flip` で左右反転、`visualization.py:997-1005`）
+- 各カメラ画像へ `lidar2img` 投影行列で **3D bbox をカメラ座標に投影して描画**（`_draw_boxes_on_image`）
+- 右側に **BEV（鳥瞰図）インセット**を合成。検出 box に加え、オプションで LiDAR 点（`overlay_lidar_bev`）・レーダー点（`overlay_radar_bev`）・HD マップ（`overlay_map_bev`, ポリライン or ラスター選択可）を重畳（`_draw_bev_map`, `visualization.py:508`）
+- LiDAR/レーダーはカメラ画像側にも投影オーバーレイ可能（`overlay_lidar_cam`/`overlay_radar_cam`）
+
+`ground-truth` サブコマンドは推論をスキップし、`extract_gt_result`（samples）または `nusc.get_boxes` 補間（sweeps + `--interpolate-sweep-annotations`）で得た正解ラベルを同じ `visualize_frame` に渡す。
+
+### A.13.4 動画化（`ResultWriter`, `custom_utils/result_writer.py`）
+
+- `write_frame()` が各フレームを JPEG として `<scene>/images/frame_NNNNNN.jpg` に保存（`output_resolution_scale` で解像度スケール、既定 0.5）。
+- シーン終了時に `_make_video()`（OpenCV `VideoWriter`, `mp4v` コーデック, `result_writer.py:33-77`）が画像を時系列に連結して `<scene>/scene.mp4` を生成。
+- FPS は `--data-type` の既定値（samples→2fps, sweeps→12fps）または `--fps` で明示指定。
+- `--save-json` でnuScenes 提出形式の検出結果 `results.json` も出力可能（`_to_nuscenes_fmt`, ground-truth モードでは無効）。
+
+出力先: `bevformer-inference-results/<subcommand>-<stem>-<W>x<H>-<samples|sweeps>-mod-<overlay-tags>-<timestamp>/<scene_idx>-<scene_token>/scene.mp4`
+
+### A.13.5 精度シミュレーション（A.1-A.12）との関係
+
+このスクリプトは `eval_trained`（A.4）の**数値評価と同じ推論経路（`make_torch_net()`）を、メトリクス集計ではなく可視化・動画出力に流用したもの**である。`torchnet` サブコマンドで実行すれば、A.8 の確率的アナログノイズモデル（重みプログラミング誤差・ADC 熱雑音等）が乗った推論結果を実際の検出box・BEV として目視確認できる——精度メトリクス（mAP 等）は数値でしか見えないが、このツールは「アナログノイズがどのフレームでどう検出結果を崩すか」を動画で直接観察する手段を提供する[推測: ドキュメント上の位置づけからの解釈]。
+
 ---
 
 # Part B: Compiler コンテナ側 — 精度評価エンジンの部品
@@ -437,6 +494,8 @@ GEN2 ガイド §8.3 の `convert_model.py steps=eval_trained` は **Part A の 
 4. **`train_huggingface` の QAT/蒸留詳細**（`huggingface_classifiers/train.py`）は未読。
 5. **`eval_config.training_args` の具体値**（batch size, workers 等）は未確認。
 6. **BCM ステージ名 "bcm" と Boreas Compute Model の対応関係**: artifact 内 `on_chip_1_bcm.onnx` の命名が BCM を指すという整理は [推測] であり、`dnn_compiler`（doc 01）側での直接的な参照は確認できていない。
+7. **`bevformer_inference.py` が他モデル（ResNet-50/YOLO 系）にも存在するか**: 未確認。ドキュメント上 BEVFormer 専用スクリプトとして案内されているため、他モデルの推論動画生成手段は別途調査が必要[推測]。
+8. **A.13 の可視化ツールとモンテカルロ（A.11）の統合**: `bevformer_inference.py` は単発推論の可視化であり、モンテカルロのスケジュール（重みランダム化を複数サンプル回す）との統合は確認していない——`torchnet` サブコマンドは `build_torchnet_from_onnx` で1つの TorchNet インスタンスを構築するのみで、サンプル間の再ランダム化ループは呼ばない。
 
 ### Part B（Compiler コンテナ側、初版から継続）
 1. `ImageClassificationBenchmark` の gt/pred 代入が名前と逆に見える（`accuracy_score` は対称なので結果に影響しないが要確認）。
@@ -455,6 +514,7 @@ GEN2 ガイド §8.3 の `convert_model.py steps=eval_trained` は **Part A の 
 - ACE モデル: `_ace_model.py`, `_denali_ace_{reference,separable}_model.py`, `_boreas_ace_model.py`
 - ワークフロー: `conversion_steps.py`, `munc_cli/helpers.py`, `_session.py`
 - HW 仕様定数: `hw_specs.py`
+- 推論結果の可視化・デモ動画生成（A.13）: `bevformer_inference_support/bevformer_inference_impl.py`, `bevformer_inference_support/custom_utils/{inference,visualization,result_writer,processing,data_loading,ground_truth,nuscenes_cache,nuscenes_gt}.py`
 
 > 上記以外（`mythic-model-zoo/configs/*.yaml`, `scripts/*.env`, `mythic.acm.denali.*`）は解析用コンテナ内で `docker exec` により確認したのみで、ホストには未抽出。コンテナは解析完了後に削除済み。
 
