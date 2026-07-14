@@ -1,0 +1,64 @@
+###### VNNORT specific environment variables
+
+# Default directory where results are being stored
+VNNORT_RESULT_DIRECTORY=./results
+
+# Directory where to find the imagenet dataset
+VNNORT_IMAGENET_DATASET_PATH="/data/videantis/sw_design/deep_learning/downloads/datasets/imagenet"
+
+# Directory where to find the squad dataset
+VNNORT_SQUAD_DATASET_PATH="/data/videantis/sw_design/deep_learning/downloads/datasets/squad"
+
+# Directory where to find the coco dataset
+VNNORT_COCO_DATASET_PATH="/data/videantis/sw_design/deep_learning/downloads/datasets/coco"
+
+# Directory where to find the nuimages dataset
+VNNORT_NUIMAGES_PATH="/data/videantis/sw_design/deep_learning/downloads/datasets/nuimages"
+
+# Directory where to find the nuscenes dataset (raw + nuscenes_infos_temporal_*.pkl)
+VNNORT_NUSCENES_PATH="/data/videantis/sw_design/deep_learning/downloads/datasets/nuscenes"
+
+# Directory where to find the pascal_voc dataset
+VNNORT_PASCALVOC_PATH="/data/videantis/sw_design/deep_learning/downloads/datasets/pascal_voc"
+
+# Directory where to find the POPE dataset
+VNNORT_POPE_DATASET_PATH="/data/videantis/sw_design/deep_learning/downloads/datasets/POPE"
+
+# Directory where to find the MMLU dataset
+VNNORT_MMLU_DATASET_PATH="/data/videantis/sw_design/deep_learning/downloads/datasets/mmlu"
+
+# Directory to the original onnx source model files for our model zoo
+VNNORT_ORIGINAL_MODELZOO_PATH="/data/videantis/sw_design/deep_learning/downloads/model_source/original_onnx"
+
+# ONNXRuntime HW configuration (Choose one of ["CUDA", "CPU"])
+VNNORT_DEVICE="CPU"
+
+# Logging level (Choose one of ["VERBOSE", "INFO", "WARNING", "ERROR", "FATAL"])
+VNNORT_LOG_LEVEL="WARNING"
+
+# Overwrite __repr__ method of proto objects for better debugging
+VNNORT_ONNX_MODELPROTO_OVERWRITE=1
+
+# Whether to relax model flow test constraints. (How good does a model need to be. See tests/flow_test.py for details)
+VNNORT_TESTING_RELAX_QUANTIZATION_ACCURACY_CONSTRAINTS=0
+
+# Whether to skip large models in flow tests (smaller memory requirements to run the test suite)
+VNNORT_TESTING_SKIP_LARGE_MODELS=0
+
+###### Overwrite library specific envs of other libraries
+
+# Overwrite where torch/huggingface store their model files to always have them at the same place and archive them
+TORCH_HOME="/data/videantis/sw_design/deep_learning/downloads/model_source/torch"
+HF_HOME="/data/videantis/sw_design/deep_learning/downloads/model_source/huggingface"
+
+# Disable parallelization by other libraries
+# OpenMP
+OMP_NUM_THREADS=1
+# OpenBLAS
+OPENBLAS_NUM_THREADS=1
+# Intel MKL
+MKL_NUM_THREADS=1
+# macOS Accelerate
+VECLIB_MAXIMUM_THREADS=1
+# NumExpr
+NUMEXPR_NUM_THREADS=1

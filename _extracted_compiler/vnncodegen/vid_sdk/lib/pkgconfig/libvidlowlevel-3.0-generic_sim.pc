@@ -1,0 +1,12 @@
+prefix=/opt/videantis/swtools/tools/vid_sdk_internal/vid_sdk_internal_2026_2_0
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+vmplibdir=${includedir}/libvidlowlevel-3.0-generic_sim/vmp-lib
+vsplibdir=${includedir}/libvidlowlevel-3.0-generic_sim/vsp-lib
+
+Name: libvidlowlevel-3.0-generic_sim
+Description: videantis Low Level Library for Generic Simulation in videantis Multicore Simulator
+Version: 3.0
+Libs:  -Wl,-rpath,${libdir} -L${libdir} -lvidlowlevel-3.0-generic_sim
+Cflags: -I${includedir}/libvidlowlevel-3.0-generic_sim

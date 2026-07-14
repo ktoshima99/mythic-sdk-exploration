@@ -1,0 +1,30 @@
+# Large SDK installer archives (zip/tar, tens of GB) — not meant for git
+*.zip
+*.tar
+*.tar.gz
+
+# Installer archive dirs (contain the same large tar/zip payloads)
+compiler-installer-m2000-v26.05.0/
+sdk-docker-image-installer-m2000-v26.05.0/
+training-models-installer-m2000-v26.05.0/
+archive/
+
+# Extracted analysis sources: keep .py/.md/.txt, drop compiled binaries and libs
+_extracted_compiler/**/*.so
+_extracted_compiler/**/*.so.*
+_extracted_sdk/**/*.so
+_extracted_sdk/**/*.so.*
+_extracted_compiler/vnncodegen/vid_sdk/bin/
+_extracted_compiler/dnn_compiler_base/
+_extracted_compiler/funcsim/bin/funcsim
+_extracted_compiler/pysim-env/
+_extracted_compiler/pyvnnsdk-env/
+_extracted_compiler/vnnsdk/
+_extracted_compiler/vnnmap/vnnmap
+_extracted_compiler/vnncodegen/vnncodegen
+_extracted_compiler/vnncodegen/vnnrtgen
+
+# OS/editor cruft
+.DS_Store
+__pycache__/
+*.pyc

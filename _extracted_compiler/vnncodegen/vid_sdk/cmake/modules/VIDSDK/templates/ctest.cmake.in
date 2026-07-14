@@ -1,0 +1,186 @@
+# ++++++++++++++++++++++++++++++ FileHeaderBegin +++++++++++++++++++++++++++++++
+#
+# CONFIDENTIAL AND PROPRIETARY INFORMATION
+# Copyright 2004 - 2024 videantis GmbH
+# All Rights Reserved
+#
+# This document contains confidential and proprietary information of videantis
+# GmbH and is protected by copyright, trade secret and other local, state,
+# federal, and international laws. Its receipt or possession does not convey
+# any rights to reproduce, transfer, disclose or publish its contents, or to
+# manufacture, commercially or non-commercially use or sell anything it may
+# describe or contain. Reproduction, disclosure or any use without specific
+# written authorization of videantis GmbH or an individual license agreement
+# with videantis GmbH is strictly forbidden.
+#
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#
+# FILENAME:    @VID_TEST_FILENAME@
+#
+# DESCRIPTION: Ctest cmake script for test @VID_TEST_NAME@
+#
+# ++++++++++++++++++++++++++++++ FileHeaderEnd +++++++++++++++++++++++++++++++++
+
+# helper macro to format outputs
+macro(format_output _var)
+  # if output is empty, write <empty> string into output variable
+  if("${${_var}}" STREQUAL "")
+    set(${_var} <empty>)
+  else() # output not empty
+    # if output not begins with a new line, add a new line at the beginning
+    if(NOT ${_var} MATCHES "^\n")
+      set(${_var} "\n${${_var}}")
+    endif()
+    # if output not ends with a new line, add a new line at the end
+    if(NOT ${_var} MATCHES "\n$")
+      set(${_var} "${${_var}}\n")
+    endif()
+  endif()
+endmacro(format_output)
+
+message(STATUS "=============================================================================")
+message(STATUS "CTEST_FULL_OUTPUT (avoid ctest truncation of output)")
+message(STATUS "")
+
+# commands to execute
+set(PRE_BUILD_TARGET_COMMANDS @VID_TEST_PRE_BUILD_TARGET@)
+set(BUILD_TARGET @VID_TEST_BUILD_TARGET@)
+set(POST_BUILD_TARGET_COMMANDS @VID_TEST_POST_BUILD_TARGET@)
+set(PRE_RUN_TARGET_COMMANDS @VID_TEST_PRE_RUN_TARGET@)
+set(RUN_TARGET @VID_TEST_RUN_TARGET@)
+set(POST_RUN_TARGET_COMMANDS @VID_TEST_POST_RUN_TARGET@)
+set(TEST_COMMANDS @VID_TEST_TEST@)
+
+
+if(PRE_BUILD_TARGET_COMMANDS)
+  # execute command in build target working directory
+  execute_process(COMMAND bash -c "@VID_TEST_PRE_BUILD_TARGET_COMMANDS@"
+    WORKING_DIRECTORY @VID_TEST_BUILD_TARGET_WORKING_DIR@
+    RESULT_VARIABLE pre_build_target_commands_result
+    OUTPUT_VARIABLE pre_build_target_commands_output
+    ERROR_VARIABLE pre_build_target_commands_error)
+
+  format_output(pre_build_target_commands_output)
+  format_output(pre_build_target_commands_error)
+
+  # check return code of command
+  if(pre_build_target_commands_result)
+    message(FATAL_ERROR "PRE_BUILD_TARGET_COMMANDS execution returned with code ${pre_build_target_commands_result} output=${pre_build_target_commands_output} error=${pre_build_target_commands_error}")
+  else()
+    message(STATUS "PRE_BUILD_TARGET_COMMANDS output=${pre_build_target_commands_output}")
+  endif()
+endif()
+
+if(BUILD_TARGET)
+  # execute command in build target working directory
+  execute_process(COMMAND bash -c "@VID_TEST_BUILD_TARGET_COMMANDS@"
+    WORKING_DIRECTORY @VID_TEST_BUILD_TARGET_WORKING_DIR@
+    RESULT_VARIABLE build_target_result
+    OUTPUT_VARIABLE build_target_output
+    ERROR_VARIABLE build_target_error)
+
+  format_output(build_target_output)
+  format_output(build_target_error)
+
+  # check return code of command
+  if(build_target_result)
+    message(FATAL_ERROR "BUILD_TARGET execution returned with code ${build_target_result} output=${build_target_output} error=${build_target_error}")
+  else()
+    message(STATUS "BUILD_TARGET output=${build_target_output}")
+  endif()
+endif()
+
+if(POST_BUILD_TARGET_COMMANDS)
+  # execute command in build target working directory
+  execute_process(COMMAND bash -c "@VID_TEST_POST_BUILD_TARGET_COMMANDS@"
+    WORKING_DIRECTORY @VID_TEST_BUILD_TARGET_WORKING_DIR@
+    RESULT_VARIABLE post_build_target_commands_result
+    OUTPUT_VARIABLE post_build_target_commands_output
+    ERROR_VARIABLE post_build_target_commands_error)
+
+  format_output(post_build_target_commands_output)
+  format_output(post_build_target_commands_error)
+
+  # check return code of command
+  if(post_build_target_commands_result)
+    message(FATAL_ERROR "POST_BUILD_TARGET_COMMANDS execution returned with code ${post_build_target_commands_result} output=${post_build_target_commands_output} error=${post_build_target_commands_error}")
+  else()
+    message(STATUS "POST_BUILD_TARGET_COMMANDS output=${post_build_target_commands_output}")
+  endif()
+endif()
+
+if(PRE_RUN_TARGET_COMMANDS)
+  # execute command in run target working directory
+  execute_process(COMMAND bash -c "@VID_TEST_PRE_RUN_TARGET_COMMANDS@"
+    WORKING_DIRECTORY @VID_TEST_RUN_TARGET_WORKING_DIR@
+    RESULT_VARIABLE pre_run_target_commands_result
+    OUTPUT_VARIABLE pre_run_target_commands_output
+    ERROR_VARIABLE pre_run_target_commands_error)
+
+  format_output(pre_run_target_commands_output)
+  format_output(pre_run_target_commands_error)
+
+  # check return code of command
+  if(pre_run_target_commands_result)
+    message(FATAL_ERROR "PRE_RUN_TARGET_COMMANDS execution returned with code ${pre_run_target_commands_result} output=${pre_run_target_commands_output} error=${pre_run_target_commands_error}")
+  else()
+    message(STATUS "PRE_RUN_TARGET_COMMANDS output=${pre_run_target_commands_output}")
+  endif()
+endif()
+
+if(RUN_TARGET)
+  # execute command in run target working directory
+  execute_process(COMMAND bash -c "@VID_TEST_RUN_TARGET_COMMANDS@"
+    WORKING_DIRECTORY @VID_TEST_RUN_TARGET_WORKING_DIR@
+    RESULT_VARIABLE run_target_result
+    OUTPUT_VARIABLE run_target_output
+    ERROR_VARIABLE run_target_error)
+
+  format_output(run_target_output)
+  format_output(run_target_error)
+
+  # check return code of command
+  if(run_target_result)
+    message(FATAL_ERROR "RUN_TARGET execution returned with code ${run_target_result} output=${run_target_output} error=${run_target_error}")
+  else()
+    message(STATUS "RUN_TARGET output=${run_target_output}")
+  endif()
+endif()
+
+if(POST_RUN_TARGET_COMMANDS)
+  # execute command in run target working directory
+  execute_process(COMMAND bash -c "@VID_TEST_POST_RUN_TARGET_COMMANDS@"
+    WORKING_DIRECTORY @VID_TEST_RUN_TARGET_WORKING_DIR@
+    RESULT_VARIABLE post_run_target_commands_result
+    OUTPUT_VARIABLE post_run_target_commands_output
+    ERROR_VARIABLE post_run_target_commands_error)
+
+  format_output(post_run_target_commands_output)
+  format_output(post_run_target_commands_error)
+
+  # check return code of command
+  if(post_run_target_commands_result)
+    message(FATAL_ERROR "POST_RUN_TARGET_COMMANDS execution returned with code ${post_run_target_commands_result} output=${post_run_target_commands_output} error=${post_run_target_commands_error}")
+  else()
+    message(STATUS "POST_RUN_TARGET_COMMANDS output=${post_run_target_commands_output}")
+  endif()
+endif()
+
+if(TEST_COMMANDS)
+  # execute command in test working directory
+  execute_process(COMMAND bash -c "@VID_TEST_TEST_COMMANDS@"
+    WORKING_DIRECTORY @VID_TEST_WORKING_DIR@
+    RESULT_VARIABLE test_commands_result
+    OUTPUT_VARIABLE test_commands_output
+    ERROR_VARIABLE test_commands_error)
+
+  format_output(test_commands_output)
+  format_output(test_commands_error)
+
+  # check return code of command
+  if(test_commands_result)
+    message(FATAL_ERROR "TEST_COMMANDS execution returned with code ${test_commands_result} output=${test_commands_output} error=${test_commands_error}")
+  else()
+    message(STATUS "TEST_COMMANDS output=${test_commands_output}")
+  endif()
+endif()
