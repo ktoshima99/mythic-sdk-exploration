@@ -1,7 +1,6 @@
 # Mythic M2000 AI アクセラレータ SDK コンパイラ 解析ドキュメント (01: コンパイルフロー)
 
 対象 SDK: `vnnsdk 26.05` / 解析対象展開先: `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/`
-作成日: 2026-07-14
 
 > 表記規約:
 > - **断定**: ソースコードから直接確認できた事実。ファイルパス:行番号を併記する。
@@ -29,7 +28,7 @@ INITIALIZED (0) → OPTIMIZED (1) → QUANTIZED (3) → COMPILED (4)
 | QUANTIZED | `.vidq.onnx` (+`.vidir`) | `VidModel.quantize()` (`vid_model.py:280`) |
 | COMPILED | (バイナリ) | `vnncodegen.run_codegen()` |
 
-一次解析にあった「opset20化(.vidi)→最適化(.vido)→量子化(.vidir)→vnnmapマッピング(.vci)→vnncodegen(.vcnn)」は正確である。補足すると:
+コンパイルフローは「opset20化(.vidi)→最適化(.vido)→量子化(.vidir)→vnnmapマッピング(.vci)→vnncodegen(.vcnn)」の順に進む。各段階の詳細は以下の通り。
 
 - **`.vidir`** は量子化完了時に `CapnprotoNetwork.save()` で書き出される Cap'n Proto 形式ネットワーク (`vid_model.py:321-323`)。ONNX 側の `.vidq.onnx` とは別に生成される。
 - opset 目標バージョンは **20** (`vnnort/models/__init__.py:15`, `ONNX_OPSET_VERSION = 20`)。最適化パイプラインの `update_onnx_opset_version()` がこの値へ変換する (`vnnort/optimizer/utils.py:146,163`)。
@@ -356,7 +355,7 @@ bias 整合 (`layer_handlers.py:277-289`): bias 指数 `e_b[Cout]` と `M+1` を
 
 ### 3.3 アナログ/デジタル振り分けとグラフ分割 (dnn_compiler)
 
-> **重要な訂正 (追補調査 2026-07-14)**: 初版では「アナログ/デジタルの振り分けは完全なブラックボックス」と記述したが、これは調査不足だった。実際には振り分けを行う本体は **`dnn_compiler` バイナリ** (`/mythic/dnn_compiler`, 約23MB ELF) であり、`strings` 解析によって**振り分けの所在・単位・判定基準がかなり具体的に判明した**。以下に反映する。振り分けは後述 3.4 の `vnnmap`(v-NN Mapper) ではなく、この `dnn_compiler` の役割である。
+アナログ/デジタルの振り分けを行う本体は **`dnn_compiler` バイナリ** (`/mythic/dnn_compiler`, 約23MB ELF) であり、`strings` 解析によって**振り分けの所在・単位・判定基準が具体的に判明している**。振り分けは後述 3.4 の `vnnmap`(v-NN Mapper) ではなく、この `dnn_compiler` の役割である。
 
 #### 3.3.1 振り分けの実装場所
 
@@ -419,7 +418,7 @@ Dense, Conv, DepthwiseConv, MmaDot, GlobalAveragePool, Slice, Cat, Add, Infeed, 
 - `auto_sectioning_mgr` による section 数の上下限決定ロジック (`upper_bound_section_num_`)
 - 複数の分割解が存在する場合の選択優先順位
 
-> 要約: アナログ/デジタル振り分けは **「完全なブラックボックス」ではなく、`dnn_compiler` の `auto_partition` パスが、①演算種別のアナログ実行可否 (`IsDenali`/`IsDigital`)、②物理 SRAM 容量、を基準に IPU パーティションへ振り分ける** ことが判明している。未確定なのは探索アルゴリズムの内部実装のみ。
+> 要約: アナログ/デジタル振り分けは **`dnn_compiler` の `auto_partition` パスが、①演算種別のアナログ実行可否 (`IsDenali`/`IsDigital`)、②物理 SRAM 容量、を基準に IPU パーティションへ振り分ける**。未確定なのは探索アルゴリズムの内部実装のみ。
 
 ---
 
@@ -485,7 +484,7 @@ Python エントリ `run_vnnmap()` (`vnnmap/run_vnnmap.py:169-252`):
 - CapnProto 中間ネットワーク `Partition` に `numL`(レーン数, 常に8), `numF`(フィルタ群), `numN=numF*numL`(並列処理される出力チャネル数) — アナログ行列の並列度を表す [推測]。
 - MAC カーネル: `vidConv::convMACchain8x8`, `convMACchain8x16`, `convMACchainFLT`(float), `vidDeconv::deconvMACchain8x8`。`8x8`/`8x16` と `Ula`/`Uls`(unsigned/signed) は後述 SaluSpec の VectorMode/SignedMode に対応 [推測]。
 
-「BCM」について: **Python ソース・vnnmap バイナリ双方に "BCM" 文字列は存在しない**(一次解析の通り)。オンチップ/オフチップ重み分割は DDR↔OCR のメモリ配置で表現され、"off_chip"/"on_chip" のリテラルも無い。最も近い概念はバス帯域モデル `vBandwidthMatrix`(`BUS_MATRIX_M/C/C_INT/C_EXT`, `vnnmap_bandwidth_matrix.cpp`)であり、これはSoC相互接続の帯域・電力プロファイル用で、アナログ重み行列とは無関係 [推測]。ブロック循環行列(block-circulant matrix)圧縮の痕跡も見当たらない。
+「BCM」について: **Python ソース・vnnmap バイナリ双方に "BCM" 文字列は存在しない**。オンチップ/オフチップ重み分割は DDR↔OCR のメモリ配置で表現され、"off_chip"/"on_chip" のリテラルも無い。最も近い概念はバス帯域モデル `vBandwidthMatrix`(`BUS_MATRIX_M/C/C_INT/C_EXT`, `vnnmap_bandwidth_matrix.cpp`)であり、これはSoC相互接続の帯域・電力プロファイル用で、アナログ重み行列とは無関係 [推測]。ブロック循環行列(block-circulant matrix)圧縮の痕跡も見当たらない。
 
 ---
 
@@ -598,7 +597,7 @@ top-level enum **`BitSpreadingMode`**: `Normal=0, TwoWay=1, FourWay=2, Nibble=3,
 
 ## 5. 未解明点と限界
 
-1. **アナログ/デジタル振り分けアルゴリズム** (3.3 参照、追補調査で更新): 振り分けの**所在 (`dnn_compiler` の `auto_partition.cpp`)・単位 (IPU パーティション、Denali=アナログ)・判定基準 (演算のアナログ実行可否 `IsDenali`/`IsDigital`、物理 SRAM 容量)** は strings 解析で判明済み。**未確定なのは分割点を選ぶ探索アルゴリズムとコスト関数の内部実装のみ**で、これは C++ バイナリの逆アセンブルが必要。→ 初版の「完全なブラックボックス」という表現は撤回する。
+1. **アナログ/デジタル振り分けアルゴリズム** (3.3 参照): 振り分けの**所在 (`dnn_compiler` の `auto_partition.cpp`)・単位 (IPU パーティション、Denali=アナログ)・判定基準 (演算のアナログ実行可否 `IsDenali`/`IsDigital`、物理 SRAM 容量)** は strings 解析で判明済み。**未確定なのは分割点を選ぶ探索アルゴリズムとコスト関数の内部実装のみ**で、これは C++ バイナリの逆アセンブルが必要。
 2. **タイル分割・重み配置の探索アルゴリズム**: レイヤ内タイル分割 (partN/H/W) と重み配置 (MmaWeightArea) の探索アルゴリズムは C++ バイナリ `vnnmap` 内で、ソース非公開。挙動は strings とスキーマからの [推測] にとどまる。「BCM」は Python・バイナリ双方に文字列として存在せず、ブロック循環行列圧縮の証拠は無い(artifact のステージ名 `on_chip_1_bcm` の "bcm" の由来は不明のまま)。
 3. **ACE 1280×272 の由来**: これらはランタイム値であり protobuf ディスクリプタには現れない。`target_spec` の実インスタンス (バイナリ target 記述) を解析していないため、banks 数・bias 行数・アキュムレータ bit 幅の具体値は未確認。
 4. **BitSpreadingMode の量子化との対応**: 量子化側 (Python) では BitSpreadingMode を設定する箇所が見当たらない。8bit 重みをどのモードでアナログ列に分散するかの決定ロジックは vnnmap/L0 lowering 側 (非公開) にある [推測]。

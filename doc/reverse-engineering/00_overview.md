@@ -2,7 +2,6 @@
 
 対象 SDK: **Mythic M2000 SDK v26.05.0**（内部呼称 `vnnsdk 26.05`）
 解析対象展開先: `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/`（コンパイラコンテナ由来）、`/home/ubuntu/mythic_sdk/26.05/_extracted_sdk/`（SDK コンテナ由来）
-作成日: 2026-07-14 / 最終更新: 2026-07-14（精度シミュレーション本体の解析完了）
 
 ---
 
@@ -10,26 +9,16 @@
 
 Mythic M2000（フラッシュ／NVM メモリセルをアナログ乗算器として用いる **アナログ compute-in-memory 型 AI アクセラレータ**）SDK の、処理ロジックをソースコードから解析した記録である。
 
-| # | ドキュメント | 対象ステップ | 解析済みか |
+| # | ドキュメント | 対象ステップ | 解析状況 |
 |---|---|---|---|
-| 01 | [01_compilation.md](01_compilation.md) | **コンパイル** | ✅ 済（コンパイラコンテナ側） |
-| 02 | [02_ppa_estimation.md](02_ppa_estimation.md) | **PPA 推定**（性能・電力・面積） | ✅ 済（コンパイラコンテナ側） |
-| 03 | [03_accuracy_simulation.md](03_accuracy_simulation.md) | **精度シミュレーション** | ✅ 済（Part A: SDK コンテナ本体 / Part B: Compiler コンテナ部品） |
-| 04 | （未作成） | **再学習** | ⛔ 未解析（SDK コンテナ側） |
-
-> ### ⚠️ 重要な訂正の履歴（2026-07-14）
-> 初版は**コンパイラコンテナ（`compilerd-bin`）だけ**を解析対象とし、その中身から各ステップを推定していた。その後 **SDK コンテナ（`sdk.tar`, 9.8GB）を `docker load` して中身を確認・解析**し、以下が判明した。
->
-> 1. **精度シミュレーションの「本体」は SDK コンテナ側（`munc`パッケージ）にあり、解析済み。** `convert_model.py`→`munc.cli.helpers.run_conversion_steps`→`conversion_steps.py`（`eval_onnx_step`/`eval_acm_step`）が本体で、Compiler コンテナの `vnnort` は評価メトリクス・推論エンジン等の**部品**にすぎなかった。詳細は [03_accuracy_simulation.md](03_accuracy_simulation.md) の Part A。
-> 2. **確率的アナログノイズモデルが SDK コンテナに実在した。** `munc/_pytorch/noise.py`（重みプログラミング誤差・温度ドリフト・ADC 熱雑音等）、`munc/bcm/bcm_models/`（6階層の忠実度モデル）、`munc/_monte_carlo/`（モンテカルロ+NIST片側許容区間による保証精度算出）。初版の「確率ノイズ注入は無い」は Compiler コンテナに限った正しい観察だったが、SDK コンテナ側にはノイズモデルが存在する。
-> 3. **"BCM" の正体が判明: Boreas Compute Model**（block-circulant matrix ではない）。`munc/bcm/bcm_layers.py` の docstring 等が根拠。Compiler コンテナに存在しないのは、BCM が学習・精度評価専用（SDK コンテナ限定）の概念だったため。
-> 4. **再学習も精度シミュレーションも SDK コンテナに両方入っている。** 「SDK コンテナ＝再学習専用」ではない。`train.py` 群（pythia/yolopx/huggingface/bevformer）と精度評価が共存する、GEN2 ガイド通りの「メイン作業環境」だった（再学習ロジック自体は未解析）。
->
-> 詳細なコンテナ役割分担は §1 の表を参照。
+| 01 | [01_compilation.md](01_compilation.md) | **コンパイル** | 解析済（Compiler コンテナ側） |
+| 02 | [02_ppa_estimation.md](02_ppa_estimation.md) | **PPA 推定**（性能・電力・面積） | 解析済（Compiler コンテナ側） |
+| 03 | [03_accuracy_simulation.md](03_accuracy_simulation.md) | **精度シミュレーション** | 解析済（Part A: SDK コンテナ本体 / Part B: Compiler コンテナ部品） |
+| 04 | （未作成） | **再学習** | 未解析（SDK コンテナ側） |
 
 ### 解析手法
 - **コンパイラコンテナ**: `compiler_m2000.tar`（OCI イメージ）を `docker load` し、`compilerd-bin:1.5.2` から生 Python ソース約 27,000 行を `_extracted_compiler/` に抽出。doc 01/02、および doc 03 Part B はこれに基づく。
-- **SDK コンテナ**: `sdk.tar` を `docker load` し `mythic-sdk-ubuntu-24.04:m2000-v26.05.0` を起動、`munc` パッケージの核心（約 8,843 行: ノイズモデル・BCM モデル階層・モンテカルロ・評価ワークフロー）を `_extracted_sdk/` に抽出して解析。doc 03 Part A はこれに基づく。**再学習ロジック（`train.py` 群）は存在を確認したのみで本文解析は未実施。**
+- **SDK コンテナ**: `sdk.tar` を `docker load` し `mythic-sdk-ubuntu-24.04:m2000-v26.05.0` を起動、`munc` パッケージの核心（約 8,843 行: ノイズモデル・BCM モデル階層・モンテカルロ・評価ワークフロー）を `_extracted_sdk/` に抽出して解析。doc 03 Part A はこれに基づく。再学習ロジック（`train.py` 群）は存在を確認したのみで本文解析は未実施。
 - コンパイル済みバイナリ（`dnn_compiler` 23MB, `vnnmap`, `vnncodegen`, `funcsim`）は `strings` で補助的に解析。
 - 各ドキュメントは実コードの **ファイルパス:行番号** を根拠として引用し、確定できない箇所は **[推測]** と明記している。
 
@@ -184,23 +173,16 @@ Compiler コンテナに `COMPILER` モデルが渡ると、さらに別系統�
 
 各ドキュメント本文でも詳述しているが、横断的に押さえるべき限界:
 
-1. **コンパイラの実マッピングは Python 外の C++ バイナリにあるが、原理は判明**（追補調査 2026-07-14 で更新）
-   「アナログ/デジタル振り分け」「off_chip/on_chip 分割」「ACE タイル配置」の実装は Python ソースではなくコンパイル済みバイナリ `dnn_compiler`（23MB）/ `vnnmap`（3MB）内にある。ただし `strings` 解析により**振り分けの所在・単位・判定基準は判明済み**:
+1. **コンパイラの実マッピングは Python 外の C++ バイナリにある**
+   「アナログ/デジタル振り分け」「off_chip/on_chip 分割」「ACE タイル配置」の実装は Python ソースではなくコンパイル済みバイナリ `dnn_compiler`（23MB）/ `vnnmap`（3MB）内にある。`strings` 解析により振り分けの所在・単位・判定基準は判明している:
    - 振り分け本体 = `dnn_compiler` の `mythic/optimizer/high/passes/auto_partition.cpp`
    - 単位 = **IPU パーティション**（`Denali`=アナログ IPU / `Digital`）。判定関数 `IsDenali()` / `IsDigital()`
    - 基準 = ①演算のアナログ実行可否（Conv/Dense/MmaDot はアナログ、DepthwiseConv 等はデジタル）②物理 SRAM 容量（超過で分割）
    - 分割境界 = infeed/outfeed 接続 → artifact の `off_chip_0 → on_chip_1_bcm → off_chip_2`
 
-   **未確定なのは分割点の探索アルゴリズムとコスト関数の内部実装のみ**（C++ 逆アセンブルが必要）。→ 初版の「完全なブラックボックス」表現は撤回。詳細は [01_compilation.md](01_compilation.md) の 3.3 節。なお "BCM" という語は Python ソース・バイナリ双方に存在しない（artifact ステージ名 `on_chip_1_bcm` の "bcm" の由来は不明）。
+   未確定なのは分割点の探索アルゴリズムとコスト関数の内部実装のみ（C++ 逆アセンブルが必要）。詳細は [01_compilation.md](01_compilation.md) の 3.3 節。なお "BCM" という語は Compiler コンテナの Python ソース・バイナリ双方に存在しない（"BCM" は SDK コンテナ側 `munc` の Boreas Compute Model を指す。§3.5 参照。artifact ステージ名 `on_chip_1_bcm` の "bcm" の由来はこの Boreas Compute Model と考えられる[推測]）。
 
-2. **精度シミュレーションの「本体」は解析済み（SDK コンテナ側）**（2026-07-14 解析完了）
-   本体ワークフロー（`convert_model.py`→`munc.cli.helpers.run_conversion_steps`→`conversion_steps.py` の `eval_onnx_step`/`eval_acm_step`）を解析済み。GEN2 ガイドの `eval_trained` は名前に反して `step_type: eval_onnx` で実装され、`torchnet`（`make_analog_model`+`noise_config`）付きで ONNX を評価する——これが実データセット(ImageNet/COCO/nuScenes等)上でアナログノイズ込みの精度を出す仕組み。詳細は [03_accuracy_simulation.md](03_accuracy_simulation.md) Part A。
-
-3. **確率的アナログノイズモデルは SDK コンテナに実在、解析済み**（2026-07-14 解析完了）
-   Compiler コンテナ側（`vnnort`）はアナログ挙動の模擬を QDQ の決定論的固定小数点量子化のみで行う——この観察自体は正しい。**SDK コンテナの `munc` パッケージに確率的ノイズモデルが実在**：`_pytorch/noise.py`（重みプログラミング誤差・温度ドリフト・ADC熱雑音・3次歪み）、`bcm/bcm_models/`（6階層の忠実度、`munc_simple`が最も物理的）、`_monte_carlo/`（NIST片側許容区間で保証精度を算出）。QDQ はこのノイズモデルの「全σ=0」極限に相当する決定論的下部構造（詳細は doc 03 Part C）。
-   **BCM の正体も判明: Boreas Compute Model**（block-circulant matrix ではない）。Compiler コンテナに存在しないのは学習・精度評価専用の概念だったため。
-
-4. **PPA の電力モデルに未算入の項目**
+2. **PPA の電力モデルに未算入の項目**
    leakage / clock tree / PCIe / D2D / NOC 電力は定義済みだが `total` に未算入（コード上 "future versions" とコメント）。レイテンシは近似（作者コメントに "this probably isn't right" の注記あり）。
 
 ---
@@ -230,7 +212,7 @@ Compiler コンテナに `COMPILER` モデルが渡ると、さらに別系統�
 | `conversion_steps.py`, `munc_cli/helpers.py`, `_session.py` | 精度評価の駆動ワークフロー本体 |
 | `hw_specs.py` | ハードウェア仕様定数(Boreas/Denali) |
 
-合計約 8,843 行。`mythic-model-zoo/configs/*.yaml` 等の Hydra 設定はコンテナ内で確認したのみで未抽出（解析用コンテナは削除済み）。
+合計約 8,843 行。`mythic-model-zoo/configs/*.yaml` 等の Hydra 設定はコンテナ内で確認したのみで未抽出。
 
 ---
 
@@ -238,7 +220,7 @@ Compiler コンテナに `COMPILER` モデルが渡ると、さらに別系統�
 
 優先度順の候補:
 
-1. **再学習ロジックの解析（最優先候補）**: `mythic-model-zoo/*/train.py` 群（pythia/yolopx/huggingface/bevformer, QAT・蒸留・ACM 変換 `convert_training_to_acm_step`）を調査し `04_retraining.md` を新規作成。SDK コンテナは再ロードが必要（解析用コンテナは削除済み、イメージ自体は `docker images` に残存の可能性あり要確認）。
+1. **再学習ロジックの解析（最優先候補）**: `mythic-model-zoo/*/train.py` 群（pythia/yolopx/huggingface/bevformer, QAT・蒸留・ACM 変換 `convert_training_to_acm_step`）を調査し `04_retraining.md` を新規作成。SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.0`）の `munc` / `mythic-model-zoo` が対象。
 2. **精度シミュレーションの未解明点の解消**: doc 03 §D に列挙した項目（`hw_model.randomize()` の実パラメータ名、Hydra config の実 YAML、`munc_acm_signoff` バージョン差異の背景等）。`mythic.acm.denali.*` 等の外部参照パッケージの追加解析が必要。
 3. **コンパイラバイナリのさらなる解析**: `vnnmap` / `dnn_compiler` の逆アセンブル・動的トレースによる分割アルゴリズムの推定。
 4. **実行トレースの取得**: 実際にモデルをコンパイル・PPA・精度評価まで実行し、生成される `.vidir` / `.vci` / `perf_trace_dump.h5` / `metrics.json` の実データで各ドキュメントの記述を検証。

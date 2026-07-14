@@ -4,32 +4,21 @@ Mythic M2000 (Denali/ACE) AI アクセラレータ SDK の **精度シミュレ�
 対象バージョン: `26.05`。すべての主張は実コードのファイルパス:行番号を根拠として引用する。
 推測は明示的に「[推測]」と記載する。
 
-作成日: 2026-07-14 / **全面改訂: 2026-07-14**（SDK コンテナ実物確認による）
-
 ---
 
-## 0. 重要な訂正（2026-07-14、SDK コンテナ実物確認による）
+## 0. 本ドキュメントの構成
 
-初版（§B 以降に統合）は **Compiler コンテナ（`compilerd-bin`）だけ**を解析対象としており、そこから「精度シミュレーションはダミー化されている」「確率的アナログノイズ注入は無い」と結論していた。
+精度シミュレーションは 2 つのコンテナにまたがる。本ドキュメントは以下の 3 部構成で解析する:
 
-その後 **SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.0`, `sdk.tar` 9.8GB）を実際に `docker load` して中身を確認**した結果、いずれも誤りだったことが判明した。
+- **Part A**: SDK コンテナ側 — 精度シミュレーションの**本体**（駆動ワークフロー・BCM・確率的ノイズモデル・モンテカルロ）。BCM = **Boreas Compute Model**（block-circulant matrix ではない）。
+- **Part B**: Compiler コンテナ側 — 精度評価の**部品**（QDQ 量子化・推論エンジン・評価メトリクス・モデル別後処理）。
+- **Part C**: Part A と Part B の関係（QDQ 決定論的量子化とアナログノイズモデルの接続）。
 
-| 初版の結論 | 訂正後 |
-|---|---|
-| 精度シミュレーションは EVAL 版でダミー化されている | Compiler コンテナ同梱の**サンプルスクリプト**（`vnnsdk/scripts/`）がダミー入力を使うだけ。精度シミュレーションを**駆動する本体**（`convert_model.py`→`munc`→`conversion_steps.py`）は **SDK コンテナ側**にあり、実データセット（ImageNet/COCO/nuScenes 等）を使う |
-| 確率的アナログノイズ（熱雑音・ADC 誤差）の注入は無い | SDK コンテナの `munc` パッケージに**確率的アナログ非理想性モデルが実在**する（`munc/_pytorch/noise.py`, `munc/bcm/bcm_models/`, `munc/_monte_carlo/`）。QDQ の決定論的量子化はこの確率モデルの「ゼロノイズ極限」に相当する下部構造 |
-| "BCM" という語はソース・バイナリいずれにも存在しない | Compiler コンテナには存在しないが、**SDK コンテナには `munc/bcm/` として実在**する。BCM = **Boreas Compute Model**（block-circulant matrix ではない） |
+精度シミュレーションを駆動する本体は SDK コンテナ側（`convert_model.py`→`munc`→`conversion_steps.py`）にあり、実データセット（ImageNet/COCO/nuScenes 等）を使う。SDK コンテナの `munc` パッケージには確率的アナログ非理想性モデルが実在する（`munc/_pytorch/noise.py`, `munc/bcm/bcm_models/`, `munc/_monte_carlo/`）。Compiler コンテナ側（`vnnort`）の QDQ 決定論的量子化は、この確率モデルの「ゼロノイズ極限」に相当する下部構造であり、Part A の確率モデルの一部として成立する。§C でこの関係を整理する。
 
-本ドキュメントは以下の 2 部構成に改める:
-
-- **Part A（新規）**: SDK コンテナ側 — 精度シミュレーションの**本体**（駆動ワークフロー・BCM・確率的ノイズモデル・モンテカルロ）
-- **Part B（既存、大枠は正しいので保持）**: Compiler コンテナ側 — 精度評価エンジンの**部品**（QDQ 量子化・推論エンジン・評価メトリクス・モデル別後処理）
-
-Part B の QDQ 決定論的量子化は誤りではなく、**Part A の確率モデルの一部（下部構造）として今も成立する**。§C でこの関係を整理する。
-
-### 解析手法の違い（重要な限界）
-- **Part A**: SDK コンテナを `docker load` → `docker run` して `docker exec` で内部を調査。核心コード（約 8,843 行、`munc` の主要サブパッケージ）はホスト `/home/ubuntu/mythic_sdk/26.05/_extracted_sdk/` に `docker cp` で抽出済み。
-- ただし `mythic-model-zoo/configs/*.yaml`（Hydra 設定）や `mythic-model-zoo/scripts/*.env` の一部、`mythic.acm.denali.*` 等の外部参照パッケージは**解析時に `docker exec` で内容を読んだのみでホストに抽出されておらず**、解析用コンテナは作業完了後に削除済みのため再確認できない。これらの箇所は本文中に「(コンテナ内確認, 再検証不可)」と注記する。
+### 解析手法とソースの所在
+- **Part A**: SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.0`）由来。核心コード（約 8,843 行、`munc` の主要サブパッケージ）はホスト `/home/ubuntu/mythic_sdk/26.05/_extracted_sdk/` に抽出済み。ただし `mythic-model-zoo/configs/*.yaml`（Hydra 設定）や `mythic-model-zoo/scripts/*.env` の一部、`mythic.acm.denali.*` 等の外部参照パッケージはホストに抽出されておらず、コンテナ内で内容を確認したのみで再確認できない。これらの箇所は本文中に「(コンテナ内確認, 再検証不可)」と注記する。
+- **Part B**: Compiler コンテナ（`compilerd-bin`）由来。ソースはホスト `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/` に抽出済み。
 
 ---
 
@@ -364,7 +353,7 @@ structural.onnx --to_training--> mythic.onnx(学習可能Mythic Nodeモデル)
 
 # Part B: Compiler コンテナ側 — 精度評価エンジンの部品
 
-> 以下は初版の解析内容（Compiler コンテナの `vnnort`）。**Part A の発見により、この節の対象は「精度シミュレーション全体」ではなく「その一部品」であると理解を改めている**。QDQ 量子化・推論エンジン構造・評価メトリクスの実装自体は正しく解析できているため大枠は保持し、誤った結論部分（B.8, B.9）のみ訂正注記を加える。
+> Part B は Compiler コンテナ側（`vnnort`）の精度評価の部品（QDQ 量子化・推論エンジン・評価メトリクス）を扱う。これらは精度シミュレーション全体ではなく、その構成部品である。
 
 対象ルート: `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/`
 
@@ -372,11 +361,11 @@ structural.onnx --to_training--> mythic.onnx(学習可能Mythic Nodeモデル)
 
 `QUANTIZED` 状態の ONNX モデル（`vnnort/models/vid_model.py:26-33`, `class ModelState`: `INITIALIZED=0`→`OPTIMIZED=1`→`QUANTIZED=3`→`COMPILED=4`）に QDQ (Quantize-Dequantize) ノードを挿入し、ONNXRuntime で FP32 数値実行することで、固定小数点量子化挙動を数値的に模擬する。`COMPILED` 状態（SIMULATOR/HARDWARE 実行）は本抽出コードで未実装（`vnnort/inference/engine.py:44,80-81,152-153`）。
 
-## B.2 Compiler コンテナ同梱サンプルスクリプトの位置づけ（訂正）
+## B.2 Compiler コンテナ同梱サンプルスクリプトの位置づけ
 
-`vnnsdk_scripts/*_postprocessing.py` は **後処理グラフを Mythic 演算に変換する検証＋性能プロファイリング用のサンプル**であり、入力はランダム（`np.random.randn(*shape)*20.0`）、`DummyDataset`（`mythic_utils.py:234-255`）を使う。
+`vnnsdk_scripts/*_postprocessing.py` は **後処理グラフを Mythic 演算に変換する検証＋性能プロファイリング用のサンプル**であり、入力はランダム（`np.random.randn(*shape)*20.0`）、`DummyDataset`（`mythic_utils.py:234-255`）を使う。これらは Compiler コンテナに同梱された一部のサンプルであり、精度シミュレーション全体を代表するものではない。
 
-**訂正**: 初版はこれを「精度シミュレーションの EVAL 版でダミー化されている」と表現したが、これは Compiler コンテナに同梱された**一部のサンプルの特徴**であり、精度シミュレーション全体の特徴ではない。実データセットローダは同じ Compiler コンテナの `vnnort/data/datasets/` に**実在**する（`coco.py`=torchvision `CocoDetection`、`imagenet.py`=torchvision `ImageNet`、`nuscenes.py`/`nuimages.py`=PIL 実画像読込、`pascalvoc.py`, `squad.py` 等）。これらのローダをどう使うかは Part A の SDK コンテナ側ワークフローが規定する。
+実データセットローダは同じ Compiler コンテナの `vnnort/data/datasets/` に**実在**する（`coco.py`=torchvision `CocoDetection`、`imagenet.py`=torchvision `ImageNet`、`nuscenes.py`/`nuimages.py`=PIL 実画像読込、`pascalvoc.py`, `squad.py` 等）。これらのローダをどう使うかは Part A の SDK コンテナ側ワークフローが規定する。
 
 ## B.3 全体フロー（`run_vnn_flow`, `mythic_utils.py:156-231`）
 
@@ -453,17 +442,15 @@ Mythic の **power-of-two 固定小数点量子化 + 飽和クリップ**の数�
 
 **レイヤ別 max_exponent 整合**（`layer_handlers.py`）: `VidConvHandler` が入力・重み・出力の指数を強制的に桁合わせ（`_adjust_max_exponents`）。重み 8bit・バイアス 16bit（2s14 フォーマット）。
 
-## B.9 確率的アナログノイズについて（訂正）
+## B.9 確率的アナログノイズについて
 
-**初版の結論（誤り）**: 「QDQLayer は決定論的な丸め+クリップのみで、熱雑音・ADC 誤差等の確率的ノイズ注入は含まれない。確率的非理想性は funcsim/vidsim バイナリ側にもストリング上見当たらない」
-
-**訂正**: この観察自体（Compiler コンテナの `vnnort`/`qdq_layer.py`/`funcsim`/`vidsim` にノイズ注入コードが無いこと）は**正しい**。しかし「確率的アナログノイズモデルは存在しない」という一般化は誤り。**SDK コンテナ側（`munc`）に確率的アナログノイズモデルが実在する**（Part A §A.8 参照: `noise.py`, `bcm_models/simplemodel.py` 等）。
+Compiler コンテナ側（`vnnort`/`qdq_layer.py`/`funcsim`/`vidsim`）にはノイズ注入コードは無く、決定論的量子化のみを行う。確率的アナログノイズモデルは SDK コンテナ側（`munc`）に存在する（Part A §A.8 参照: `noise.py`, `bcm_models/simplemodel.py` 等）。
 
 Compiler コンテナと SDK コンテナは役割が異なる:
 - **Compiler コンテナ（`vnnort`）**: コンパイル・PPA 推定用の決定論的量子化模擬。ハードウェアが実際に実行する固定小数点演算の**数値レンジ整合**が目的。
 - **SDK コンテナ（`munc`）**: 学習・精度評価用の確率的非理想性モデル。**実チップの精度分布**（歩留まり・製造ばらつき）を予測するのが目的。
 
-funcsim/vidsim（strings 解析）も同様にビットトゥルー決定論的シミュレータであり、これも訂正の対象外ではない——「ノイズが無い」という表現ではなく「**この 2 つのバイナリの役割にはノイズモデルが含まれない（性能/ビットトゥルー検証専用）**」と理解するのが正確。
+funcsim/vidsim（strings 解析）も同様にビットトゥルー決定論的シミュレータであり、この 2 つのバイナリの役割にはノイズモデルが含まれない（性能/ビットトゥルー検証専用）。
 
 ## B.10 モデル別後処理（グラフ書き換え）概要
 
@@ -514,7 +501,7 @@ GEN2 ガイド §8.3 の `convert_model.py steps=eval_trained` は **Part A の 
 7. **`bevformer_inference.py` が他モデル（ResNet-50/YOLO 系）にも存在するか**: 未確認。ドキュメント上 BEVFormer 専用スクリプトとして案内されているため、他モデルの推論動画生成手段は別途調査が必要[推測]。
 8. **A.13 の可視化ツールとモンテカルロ（A.11）の統合**: `bevformer_inference.py` は単発推論の可視化であり、モンテカルロのスケジュール（重みランダム化を複数サンプル回す）との統合は確認していない——`torchnet` サブコマンドは `build_torchnet_from_onnx` で1つの TorchNet インスタンスを構築するのみで、サンプル間の再ランダム化ループは呼ばない。
 
-### Part B（Compiler コンテナ側、初版から継続）
+### Part B（Compiler コンテナ側）
 1. `ImageClassificationBenchmark` の gt/pred 代入が名前と逆に見える（`accuracy_score` は対称なので結果に影響しないが要確認）。
 2. `_adjust_max_exponents` の grouped convolution 対応に `FIXME`（`layer_handlers.py:211`）。
 3. funcsim/vidsim の `OperationPrecision`/`ClipValue` が QDQ 式とビット単位で一致するかは strings からは断定できない。
