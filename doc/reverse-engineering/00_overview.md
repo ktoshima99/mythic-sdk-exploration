@@ -120,6 +120,52 @@ SDK 内部では旧社名 **videantis** 由来の `vid*` プレフィックス�
 
 ---
 
+## 3.5 モデルの状態遷移と中核となる中間表現
+
+学習済みモデルは、SDK コンテナ（`munc`）→ Compiler コンテナ（`vnnort`）へと進む過程で**複数の中間表現（モデル状態）**を辿る。各状態は特定のクラス／グラフ形式で表現され、`BCM` はそのうちの 1 つである。BCM だけが中核なのではなく、以下が並ぶ「状態の連鎖」として理解するのが正確。
+
+### SDK コンテナ側のモデル状態（`munc._constants.MODELType`, `_session.py` の状態遷移）
+
+`munc` は `MODELType`（`_constants.py:327`）でモデルの状態を管理し、`_session.py` の `get_*_conversion_ops()` が状態を進める:
+
+```
+ORIGINAL ──to_structural──▶ (structural) ──to_training──▶ MYTHIC ──to_acm──▶ BCM ──create_artifact──▶ COMPILER
+OriginalModel               中間graph        MythicModel            BCMModel               CompilerModel
+```
+
+| モデル状態 / 中間表現 | 実体・クラス | 役割 | 使われるステップ |
+|---|---|---|---|
+| **ORIGINAL** (`OriginalModel`) | 素の FP32 ONNX | 学習/エクスポート直後の入力モデル | `to_onnx` の出力 |
+| **structural** | 中間 ONNX グラフ | on/off-chip マーキング・定数畳み込み等の構造整理済み | `to_structural` |
+| **MYTHIC** (`MythicModel`) | `MythicConv2d`/`MythicLinear` 等の Mythic ノード（`_constants.py:89-94`）を持つ ONNX | **アナログaware 再学習可能**な量子化グラフ（FSR 分解・DSF 学習可能化済み） | `to_training` の出力 → `train` の対象 |
+| **BCM** (`BCMModel`) | `BCMConv2d`/`BCMLinear`（`bcm_layers.py`）= **アナログ MAC(`mma_class`) + デジタルデータパス**（doc 03 A.6.1） | 学習済みモデルを**ハードウェア忠実に数値再現**する中間表現。別名 **ACM (Analog Compute Model)** | `to_acm` で生成 → `eval_acm`・`create_artifact` の入力 |
+| **COMPILER** (`CompilerModel`) | コンパイラ入力用に整えた ONNX（`compiler_ready_artifact.tar.gz`） | Compiler コンテナへ渡す最終成果物 | `create_artifact` の出力 |
+| **TorchNet** | `torch.nn.Module`（`munc._torchnet.TorchNet`, doc 03 A.13） | ONNX（Mythic/BCM ノード含む）を**実行可能な PyTorch モデル**に変換。`make_torch_net()` で構築 | `eval_trained`・推論動画生成の実行基盤 |
+
+> `RETRAIN`/`PTM` も `MODELType` に定義されているが本解析では未確認。
+
+### Compiler コンテナ側の中間表現（doc 01）
+
+Compiler コンテナに `COMPILER` モデルが渡ると、さらに別系統の中間表現に変換される:
+
+| 中間表現 | 実体 | 役割 |
+|---|---|---|
+| **vidConv 等の `com.videantis` カスタムオペ** | 最適化後 ONNX | 標準オペを Mythic 演算に書き換えた形（MatMul/Attention も Conv に統一） |
+| **QDQLayer** | fake-quant ONNX 関数（`qdq_layer.py`） | 決定論的 power-of-two 量子化を ONNXRuntime 上で数値模擬（doc 03 Part B / Part C） |
+| **`.vidir`** (CapnProto Network) | `VNNMapExporter` 出力 | 量子化情報（max_exponents 等）を埋めた中間ネットワーク |
+| **`.vci` / L0 IR** | `vnnmap`/`dnn_compiler` 出力 | ACE タイル配置・パーティション済みの低レベル表現 |
+
+### 中核モデルの対応関係（要点）
+
+- **BCM (= ACM)**: SDK コンテナ側で、学習済みモデルをハードウェア忠実に**数値再現**する中間表現。**精度評価とコンパイラ artifact 生成の両方**で使われる（精度シミュ専用ではない。doc 03 A.5/A.12）。artifact 生成時は `SwitchBCM(munc_digital)` でノイズなしデジタル忠実モデルに固定される。
+- **TorchNet**: BCM/Mythic ノードを含む ONNX を**実行**するための PyTorch ラッパ。精度評価・推論動画の実行エンジン。
+- **QDQLayer**: Compiler コンテナ側の決定論的量子化模擬。BCM の確率的ノイズモデルの「ゼロノイズ極限」に相当する下部構造（doc 03 Part C）。
+- **vidConv / .vidir / .vci**: Compiler コンテナ側のコンパイル用中間表現。
+
+つまり「中核となるモデル」は BCM 単独ではなく、**`ORIGINAL → structural → MYTHIC → BCM(ACM) → COMPILER` という状態連鎖**であり、実行時にはそれぞれ **TorchNet**（SDK 側実行）や **QDQLayer/.vidir/.vci**（Compiler 側）として具現化される。
+
+---
+
 ## 4. ハードウェア仕様（protobuf・電力モデルから復元）
 
 | 項目 | 値 | 出典 |
