@@ -5,9 +5,9 @@
 
 対象ソース(読み取り専用):
 
-- 性能: `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/perf_analysis.py`(全 1329 行)
-- 電力: `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/mythic_pkg/m2000_power_estimator/power_estimator.py`(全 649 行)
-- protobuf 定義: `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/mythic_pkg/irs/l0/ir_pb2.py`, `parameters_pb2.py`
+- 性能: `mythic_sdk/_extracted_compiler/perf_analysis.py`(全 1329 行)
+- 電力: `mythic_sdk/_extracted_compiler/mythic_pkg/m2000_power_estimator/power_estimator.py`(全 649 行)
+- protobuf 定義: `mythic_sdk/_extracted_compiler/mythic_pkg/irs/l0/ir_pb2.py`, `parameters_pb2.py`
 
 以降、「[perf:NNN]」は `perf_analysis.py` の行番号、「[pow:NNN]」は `power_estimator.py` の行番号を指す。
 
@@ -666,13 +666,13 @@ GLOBAL コメント [pow:64]「FF エネルギー 2fF/toggle なので複数ホ�
 
 | ファイル | 役割 |
 |---|---|
-| `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/perf_analysis.py` | 性能・面積推定(HDF5 トレース解析、全 1329 行) |
-| `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/mythic_pkg/m2000_power_estimator/power_estimator.py` | 電力推定(L0 protobuf 解析、全 649 行) |
-| `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/mythic_pkg/irs/l0/ir_pb2.py` | L0 IR 定義(`Crate`,`BaseLauncher`,`MmaDot`,`ParameterInfo`,`iteration_spec`,`adc_cycles`,`input_start_bit`/`input_end_bit`) |
-| `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/mythic_pkg/irs/l0/parameters_pb2.py` | パラメータ/`LauncherRole` 定義 |
-| `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/mythic_pkg/irs/l0/shape_pb2.py` | `Shape`/`dims` 定義 |
-| `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/mythic_pkg/irs/l0/vector_processing_pb2.py` | SIMD(salu)関連 |
-| `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/mythic_pkg/target_spec/target_pb2.py`, `resources_pb2.py` | ターゲット/リソース定義(ir が import) |
+| `mythic_sdk/_extracted_compiler/perf_analysis.py` | 性能・面積推定(HDF5 トレース解析、全 1329 行) |
+| `mythic_sdk/_extracted_compiler/mythic_pkg/m2000_power_estimator/power_estimator.py` | 電力推定(L0 protobuf 解析、全 649 行) |
+| `mythic_sdk/_extracted_compiler/mythic_pkg/irs/l0/ir_pb2.py` | L0 IR 定義(`Crate`,`BaseLauncher`,`MmaDot`,`ParameterInfo`,`iteration_spec`,`adc_cycles`,`input_start_bit`/`input_end_bit`) |
+| `mythic_sdk/_extracted_compiler/mythic_pkg/irs/l0/parameters_pb2.py` | パラメータ/`LauncherRole` 定義 |
+| `mythic_sdk/_extracted_compiler/mythic_pkg/irs/l0/shape_pb2.py` | `Shape`/`dims` 定義 |
+| `mythic_sdk/_extracted_compiler/mythic_pkg/irs/l0/vector_processing_pb2.py` | SIMD(salu)関連 |
+| `mythic_sdk/_extracted_compiler/mythic_pkg/target_spec/target_pb2.py`, `resources_pb2.py` | ターゲット/リソース定義(ir が import) |
 
 入力データファイル(実行時):
 - `perf_trace_dump.h5`(HDF5 トレース、`--hdf5-path`)

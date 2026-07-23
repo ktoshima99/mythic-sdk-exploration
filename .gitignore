@@ -3,26 +3,33 @@
 *.tar
 *.tar.gz
 
-# Installer archive dirs (contain the same large tar/zip payloads)
-compiler-installer-m2000-v26.05.0/
-sdk-docker-image-installer-m2000-v26.05.0/
-training-models-installer-m2000-v26.05.0/
-archive/
+# mythic_sdk/: the vendor SDK drop (installer payloads + extracted sources +
+# vendor docs + launch scripts). This whole subtree is expected to be deleted
+# and replaced wholesale when the Mythic SDK version changes. Only a few
+# small, version-independent bits under it are git-tracked (launch scripts,
+# and the extracted .py/.md source used as the analysis target — see below).
+mythic_sdk/archive/
+mythic_sdk/compiler-installer-*/
+mythic_sdk/sdk-docker-image-installer-*/
+mythic_sdk/training-models-installer-*/
+
+# output/: generated artifacts (videos, etc.) — reproducible, not meant for git
+output/
 
 # Extracted analysis sources: keep .py/.md/.txt, drop compiled binaries and libs
-_extracted_compiler/**/*.so
-_extracted_compiler/**/*.so.*
-_extracted_sdk/**/*.so
-_extracted_sdk/**/*.so.*
-_extracted_compiler/vnncodegen/vid_sdk/bin/
-_extracted_compiler/dnn_compiler_base/
-_extracted_compiler/funcsim/bin/funcsim
-_extracted_compiler/pysim-env/
-_extracted_compiler/pyvnnsdk-env/
-_extracted_compiler/vnnsdk/
-_extracted_compiler/vnnmap/vnnmap
-_extracted_compiler/vnncodegen/vnncodegen
-_extracted_compiler/vnncodegen/vnnrtgen
+mythic_sdk/_extracted_compiler/**/*.so
+mythic_sdk/_extracted_compiler/**/*.so.*
+mythic_sdk/_extracted_sdk/**/*.so
+mythic_sdk/_extracted_sdk/**/*.so.*
+mythic_sdk/_extracted_compiler/vnncodegen/vid_sdk/bin/
+mythic_sdk/_extracted_compiler/dnn_compiler_base/
+mythic_sdk/_extracted_compiler/funcsim/bin/funcsim
+mythic_sdk/_extracted_compiler/pysim-env/
+mythic_sdk/_extracted_compiler/pyvnnsdk-env/
+mythic_sdk/_extracted_compiler/vnnsdk/
+mythic_sdk/_extracted_compiler/vnnmap/vnnmap
+mythic_sdk/_extracted_compiler/vnncodegen/vnncodegen
+mythic_sdk/_extracted_compiler/vnncodegen/vnnrtgen
 
 # OS/editor cruft
 .DS_Store

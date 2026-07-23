@@ -17,8 +17,8 @@ Mythic M2000 (Denali/ACE) AI アクセラレータ SDK の **精度シミュレ�
 精度シミュレーションを駆動する本体は SDK コンテナ側（`convert_model.py`→`munc`→`conversion_steps.py`）にあり、実データセット（ImageNet/COCO/nuScenes 等）を使う。SDK コンテナの `munc` パッケージには確率的アナログ非理想性モデルが実在する（`munc/_pytorch/noise.py`, `munc/bcm/bcm_models/`, `munc/_monte_carlo/`）。Compiler コンテナ側（`vnnort`）の QDQ 決定論的量子化は、この確率モデルの「ゼロノイズ極限」に相当する下部構造であり、Part A の確率モデルの一部として成立する。§C でこの関係を整理する。
 
 ### 解析手法とソースの所在
-- **Part A**: SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.0`）由来。核心コード（約 8,843 行、`munc` の主要サブパッケージ）はホスト `/home/ubuntu/mythic_sdk/26.05/_extracted_sdk/` に抽出済み。ただし `mythic-model-zoo/configs/*.yaml`（Hydra 設定）や `mythic-model-zoo/scripts/*.env` の一部、`mythic.acm.denali.*` 等の外部参照パッケージはホストに抽出されておらず、コンテナ内で内容を確認したのみで再確認できない。これらの箇所は本文中に「(コンテナ内確認, 再検証不可)」と注記する。
-- **Part B**: Compiler コンテナ（`compilerd-bin`）由来。ソースはホスト `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/` に抽出済み。
+- **Part A**: SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.0`）由来。核心コード（約 8,843 行、`munc` の主要サブパッケージ）はホスト `mythic_sdk/_extracted_sdk/` に抽出済み。ただし `mythic-model-zoo/configs/*.yaml`（Hydra 設定）や `mythic-model-zoo/scripts/*.env` の一部、`mythic.acm.denali.*` 等の外部参照パッケージはホストに抽出されておらず、コンテナ内で内容を確認したのみで再確認できない。これらの箇所は本文中に「(コンテナ内確認, 再検証不可)」と注記する。
+- **Part B**: Compiler コンテナ（`compilerd-bin`）由来。ソースはホスト `mythic_sdk/_extracted_compiler/` に抽出済み。
 
 ---
 
@@ -123,9 +123,15 @@ with SessionFromConfig(cfg, allow_other_keys=True) as s:
 - `munc/bcm/bcm_layers.py` の docstring: "to be run with the **Boreas Compute Model**"
 - `munc/bcm/bcm_utils.py`: `"Run BCM validation"`
 
-`munc/bcm/` は ONNX の `Conv`/`Linear` ノードを `BCMConv2d`/`BCMLinear`（`bcm_layers.py`）に置き換える。`convert_convs_to_bcm.py`（`munc/ops/`）がこの変換を行う。artifact 内のステージ名 `on_chip_1_bcm.onnx`（GEN2 コンパイル出力）の "bcm" はこの Boreas Compute Model 表現を指すと考えられる[推測: artifact 生成が `munc/_artifact/` 経由であることとの整合による推定]。
+`munc/bcm/` は ONNX の `Conv`/`Linear` ノードを `BCMConv2d`/`BCMLinear`（`bcm_layers.py`）に置き換える。`convert_convs_to_bcm.py`（`munc/ops/`）がこの変換を行う。
 
-> Compiler コンテナ側（`vnnort`）に "BCM" の文字列が存在しないのは、Compiler コンテナがコンパイル・PPA 推定のバックエンドであり、BCM モデルは SDK コンテナ側（学習・精度評価）だけで使われるためと考えられる。
+**[確定] BCM は精度評価専用ではなく、Compiler への最終入力データそのものである。** `create_training_artifact_step`（A.12）が呼ぶ `get_bcm_to_artifact_conversion_ops`（`_session.py:447`）は `ConvertBCMToConvs`（BCM opを標準 ONNX op に戻す op。`munc/ops/convert_bcm_to_convs.py` に実装は存在するが、この変換パスからは呼ばれない）を実行しない。かわりに `SwitchBCM(bcm_class_str=digitalmodel.FACTORY_NAME)` で全ノードを `munc_digital`（ノイズ無しデジタル忠実モデル）に固定するだけで、ノードの `op_type` は `BCMConv2d`/`BCMLinear` のまま**保持される**。`_generate_artifact.py` の docstring も `"""Generate artifacts from a bcm-type model."""` と明記している。
+
+artifact 内のステージ名 `on_chip_1_bcm.onnx` の "bcm" はこの Boreas Compute Model 表現を指す（`munc/_artifact/artifact_writer.py` の `write_artifact`: `bcm = "_bcm" if "on_chip" in name else ""` — ファイル名のサフィックスは文字通り BCM op ノードを含むことを示す）。
+
+このファイルはそのまま Compiler コンテナへ渡る（SDK コンテナ側 `mythic.model_deployment.rmcr.compile.get_on_chip_onnx()` が `on_chip` を含む onnx ファイルを選び、`dnn_fw_compile()`→`dnn_compile()` が `--onnx-file <on_chip_1_bcm.onnx>` として `dnn_compiler` バイナリを起動する）。したがって **BCM op（`BCMConv2d`/`BCMLinear`/`BCMSum`/`BCMAdd`/`BCMMul`）を含む ONNX を直接読み解釈するのは Compiler コンテナ側の `dnn_compiler` バイナリ（コンパイル済み C++、doc 01 の解析対象外）である**。
+
+> Compiler コンテナ側の Python ソース（`vnnort`）に "BCM" の文字列が存在しない（doc 01 で確認済み）のは、BCM opの解釈自体が Python ラッパではなく `dnn_compiler` バイナリの内部で行われているためである。Python 側の役割は「artifact から on_chip ONNX を取り出し、`--onnx-file` として渡す」までであり、BCM op を認識・処理するロジック自体は非公開バイナリの中にある。**「BCM は SDK コンテナ側だけで使われる」という旧記述は誤り**——BCM op を含む ONNX は Compiler コンテナのコンパイル処理の直接入力である。
 
 ### A.6.1 BCM 層の内部構造 — 「アナログ MAC」と「デジタルデータパス」の2段（重要）
 
@@ -141,6 +147,53 @@ with SessionFromConfig(cfg, allow_other_keys=True) as s:
 - 符号付き入力の場合は正負を分離して重みを複製する差動処理も BCM 層側で行う（`bcm_layers.py:90-93`）。
 
 したがって **BCM 層 ⊋ アナログ MAC モデル**（BCM 層はアナログ MAC を内包しつつ、その前後のデジタル演算も含む）。「BCM = アナログ MAC そのもの」ではなく「BCM = ACE のアナログ MAC を `mma_class` に委譲しつつ、デジタルデータパスと組み合わせて `Conv`/`Linear` 層全体をハードウェア忠実に再現する層」が正確。次の A.7 が扱う 6 階層は、この①の部分（`mma_class`）の忠実度バリエーションである。
+
+`self.digital_datapath`（`ace_digital_datapath_factory`, `munc_bcm/ace_digital_datapath.py`）の実体クラス（`ACEDigitalDatapathBoreasAInt8`/`ACEDigitalDatapathBoreasBInt8` 等）と、`BCMSum`/`BCMAdd`/`BCMMul` が使う `SALUDatapathInt8`（`munc_bcm/salu_datapath.py`）は、いずれも命名・実装内容に **`videantis`/`vid*` の要素を含まない**（Boreas/BoreasA/BoreasB という Mythic 独自チップ世代名でのみ分岐）。処理内容は「`multiplier/2^shift` によるスケール・右シフト＋活性化関数(`relu`/`hardtanh`/`hardsigmoid`/`swish`)適用」のみで、ACE アナログ MAC 出力を受けた直後の小規模な後処理回路をモデル化したものである。これは Compiler コンテナ側（doc 01）の `com.videantis` カスタムオペ（`vidConv`/`vidSoftmax`/`vidLayerNorm`/`Shortcut` 等、DepthwiseConv や Attention 分解等アナログ実行できない演算全体を担う別の "Digital" IPU パーティション）とは**別の・より小規模な概念**である。両者の関係は A.6.1.2 で詳述する。
+
+### A.6.1.1 ONNX op_type 文字列 → PyTorch クラスのディスパッチ機構（BCM 組み込みの実メカニズム）
+
+「なぜ ONNX グラフの書き換えだけで実際の BCM 計算に変わるのか」という変換の実体は、**ONNX ノードの `op_type` 文字列を、そのままクラス名として `munc._o2t_ops` から `getattr` 解決する**という設計で実現されている（`_torchnet.py:129` の `default_layer_factory`, `_torchnet.py:163`: `layer_class = getattr(_o2t_ops, o2t_op)`, `o2t_op = node.op_type`）。
+
+変換の流れ（`_session.py` の3メソッド + `TorchNet` 構築）:
+
+```
+ONNX Conv/Gemm
+  │ ConvertNodesToMythic (munc/ops/convert_nodes_to_mythic.py): op_type文字列を書き換えるだけ
+  ▼
+MythicConv2d/MythicLinear ノード（アナログaware学習可能グラフ、まだ「文字列」でしかない）
+  │ ConvertConvsToBCM (munc/ops/convert_convs_to_bcm.py, to_acmステップ): op_type文字列を書き換え
+  │   + ONNX属性 __mma_class/__mma_attr を付与（bcm_utils.MMA_CLASS_ATTRIBUTE_NAME）
+  │   is_digital_onchip(node) が True なら bcm_class_str を強制的に munc_int8 に上書き（A.6.3参照）
+  ▼
+BCMConv2d/BCMLinear ノード（まだ「文字列」でしかない）
+  │ SwitchBCM (munc/ops/switch_bcm.py, eval_acm/create_artifact時): __mma_class/__mma_attr属性だけを書き換え
+  │   （ノード型は変えない。6階層モデルの後からの切替に使う）
+  │
+  │ make_torch_net() → TorchNet.__init__ → default_layer_factory
+  │   node.op_type "BCMConv2d" を munc._o2t_ops.BCMConv2d に getattr 解決
+  ▼
+bcm_layers.BCMConv2d インスタンス（実 PyTorch nn.Module）
+```
+
+`munc/_o2t_ops/__init__.py` がこの文字列解決の唯一の場所であり、標準 ONNX op（`Conv`/`Gemm`等）は個別ファイル実装、Mythic 系（`MythicConv2d`等）は `mythic_conv.py` 等、**BCM 系は `munc.bcm.bcm_layers` から再エクスポート**されている:
+```python
+from munc.bcm import bcm_layers
+BCMConv2d = bcm_layers.BCMConv2d
+BCMLinear = bcm_layers.BCMLinear
+```
+つまり `ConvertConvsToBCM` が `node.op_type = "BCMConv2d"` にした時点で、次に `TorchNet` を構築すると自動的に `bcm_layers.BCMConv2d`（A.6.1 の①アナログMAC+②デジタルデータパス構成）が使われる。「ONNX グラフレベルの操作（文字列の書き換え）」と「実際の数値計算（PyTorch nn.Module の forward）」が、この 1 点のディスパッチテーブルで接続されている。
+
+`BCMMMAOp.forward`（`bcm_layers.py:85-103`）内で `self.mma_class`（= 6 階層モデルの1つ）は、`bcm_utils._get_mma_class_from_node(node)` が ONNX 属性 `__mma_class` の文字列を `MMA` レジストリ（`bcm_utils.py` 末尾の `MMA.register_builder(...)` 群）で実クラスに解決した結果である。同じ「文字列→クラス」ディスパッチパターンが、BCM 層本体の解決（`_o2t_ops`経由）と、その内部のアナログMACモデル選択（`MMA`レジストリ経由）の**両方**で使われている。
+
+### A.6.1.2 BCM/精度シミュレーションがカバーするデジタル演算の範囲（限界）
+
+`munc/bcm/bcm_layers.py` に実装されている BCM 層クラスは **`BCMConv2d`/`BCMLinear`/`BCMSum`/`BCMAdd`/`BCMMul` の 5 種類のみ**である。doc 01 §3.1.2(G) で確認した Compiler コンテナ側の Attention/Transformer 分解（`vidSoftmax`・`vidLayerNorm`・`Shortcut`・グループ化 reshape 等、`com.videantis` カスタムオペ群）に対応する `BCMSoftmax`/`BCMLayerNorm`/`BCMAttention` 相当のクラスは**存在しない**。
+
+- **Softmax**: on-chip 量子化学習用の `MythicSoftmax`（`munc/_o2t_ops/mythic_softmax.py`）は「入力に定数スケールを乗算→`torch.softmax`→出力に定数スケールを乗算→クリップ」のみ（`_layer_op`）。コンパイラ側 `vidSoftmax`（doc 01: アテンションヘッド単位で `[N,group*C,...]→[N*group,C,-1]` にreshapeしグループ毎に独立softmaxを適用）のような精密なグループ化・reshape 処理は再現していない。
+- **DepthwiseConv**: `MarkDepthwiseConvsAsDigital`（`munc/ops/mark_depthwise_convs_as_digital.py`）が `group == out_channels かつ in_channels(per group) == 1` の Conv ノードに `__digital_onchip` 属性を付与する。これが `ConvertConvsToBCM`/`SwitchBCM` 内の `is_digital_onchip(node)` 判定（`bcm_utils`）で使われ、該当ノードは強制的に **`munc_int8`**（A.7 の6階層中、最も単純な「量子化のみ・ノイズなし」モデル）が使われる。`BCMConv2d` というクラス自体は使われ続けるが、中身は量子化のみの粗い近似であり、実チップの SALU/デジタルパスの正確な演算ではない。
+- **Attention 分解**（Q/K/V射影・QKᵀ・グループ化softmax等、doc 01 (G)）: 精度シミュレーション側に対応するグラフ書き換えは存在しない。TorchNet 上ではこれらは元の ONNX 標準op（`Softmax`/`MatMul`等、off-chip 相当）のまま量子化・ノイズなしで実行される[推測: `_o2t_ops` に Attention 分解用の特殊クラスが見当たらないことからの推定]。
+
+**結論（設計上の役割分担）**: BCM/精度シミュレーション（SDK コンテナ側）が精密にモデル化するのは**アナログ非理想性**（重みプログラミング誤差・温度・ADC熱雑音等、A.8 参照）であり、これは製造ばらつきに起因し確率的にしか予測できない。一方、DepthwiseConv・Softmax・LayerNorm・Attention 分解等の「デジタル実行される演算」は決定論的（ノイズなし）であるため、その正確な固定小数点挙動の検証は Compiler コンテナ側の決定論的ツール（QDQ/funcsim/vidsim, Part B, doc 03 B.9）に委ねられており、SDK 側では量子化のみの粗い近似で代用されている[推測: この役割分担が意図的な設計判断であることはコード上の直接的な根拠がなく、実装のカバレッジ差からの推定]。
 
 ## A.7 `mma_class` のアナログ MAC モデル階層（精度忠実度）
 
@@ -291,6 +344,7 @@ structural.onnx --to_training--> mythic.onnx(学習可能Mythic Nodeモデル)
 - **`convert_training_to_acm_step`**: `ConvertConvsToBCM(bcm_class_str="munc_fp")` を含む op 列で `acm.onnx` を生成。
 - **`create_training_artifact_step`**: `sess.get_bcm_to_artifact_conversion_ops()` で `SwitchBCM(digitalmodel)`・`verify_compiler_model`（コンパイラ整合検証）等を実行し、`munc._artifact.artifact_writer.Artifact` で tar.gz を書き出す。
 - **off/on-chip 遷移の整形**: `munc/_artifact/_prepare_off_on_chip_transitions.py`（`collect_data_formats`）が、グラフ分割後の各ポートのデータ形式（型・レイアウト）を突き合わせ、不一致な遷移エッジに変換を挿入する。これが GEN2 コンパイル出力の `off_chip_0`/`on_chip_1_bcm`/`off_chip_2` の境界整形に対応する[推測: doc 01 で確認したコンパイラ側パーティショニングとの接続点]。
+- **[確定] `on_chip_1_bcm.onnx` は Compiler コンテナへの直接入力**: SDK コンテナ側 `mythic.model_deployment.rmcr.compile.get_on_chip_onnx()`（`compile.py:88`）が artifact 内の `onnx_graphs` から `"on_chip"` を含むファイル（= `on_chip_1_bcm.onnx`、BCM opノードを保持したまま）を選択し、`dnn_fw_compile()`→`dnn_compile()`（`mythic/model_deployment/rmcr/compiler.py`）が `--onnx-file <path>` オプションとして Compiler コンテナの `dnn_compiler` バイナリを起動する。A.6 で確認した通り、`create_artifact` は BCM op を標準 ONNX op に戻さない（`ConvertBCMToConvs` は呼ばれない）ため、BCM op を含む ONNX がそのまま Compiler の入力になる。
 
 ## A.13 推論結果の可視化・デモ動画生成（`bevformer_inference.py`）
 
@@ -355,7 +409,7 @@ structural.onnx --to_training--> mythic.onnx(学習可能Mythic Nodeモデル)
 
 > Part B は Compiler コンテナ側（`vnnort`）の精度評価の部品（QDQ 量子化・推論エンジン・評価メトリクス）を扱う。これらは精度シミュレーション全体ではなく、その構成部品である。
 
-対象ルート: `/home/ubuntu/mythic_sdk/26.05/_extracted_compiler/`
+対象ルート: `mythic_sdk/_extracted_compiler/`
 
 ## B.1 この部品が「何を」シミュレートするか
 
@@ -487,17 +541,29 @@ GEN2 ガイド §8.3 の `convert_model.py steps=eval_trained` は **Part A の 
 
 つまり GEN2 ガイドの精度シミュレーションは「**アナログノイズを含む評価を 1 回実行**」であり、モンテカルロ＋トレランス（A.11）による製品保証精度の算出は、より本格的な `mc_eval_trained` ステップ（GEN2 標準フローには含まれない）を使う場合に限られる[推測]。
 
+## C.3 精度シミュレーションはデジタル演算（DepthwiseConv・Softmax・Attention等）をシミュレートしない
+
+A.6.1.1/A.6.1.2 で確認した通り、SDK コンテナ側の BCM/TorchNet 経路は **アナログ非理想性の精密なモデル化に特化**しており、Compiler コンテナ側が扱う「デジタル実行される演算」（DepthwiseConv、Softmax/LayerNorm/Attention 分解等の `com.videantis` カスタムオペ、doc 01 §3.1.2(G)）は精密にはシミュレートしない:
+
+- `munc/bcm/bcm_layers.py` に実装されている BCM 層は `BCMConv2d`/`BCMLinear`/`BCMSum`/`BCMAdd`/`BCMMul` の5種のみで、`BCMSoftmax`/`BCMLayerNorm`/`BCMAttention` 相当は存在しない。
+- DepthwiseConv は `MarkDepthwiseConvsAsDigital`（`munc/ops/mark_depthwise_convs_as_digital.py`）で `__digital_onchip` 属性を付与され、`ConvertConvsToBCM`/`SwitchBCM` の `is_digital_onchip(node)` 判定により強制的に `munc_int8`（6階層中最も単純な「量子化のみ」モデル）に固定される。
+- Softmax の on-chip 版 `MythicSoftmax`（`munc/_o2t_ops/mythic_softmax.py`）は入出力への定数スケール乗算＋クリップのみで、コンパイラ側 `vidSoftmax` のグループ化・reshape処理を再現しない。
+- Attention 分解（doc 01 (G)）に対応する精度シミュレーション側のグラフ書き換えは存在せず、TorchNet 上は元の標準 ONNX op のまま（量子化・ノイズなし）で実行されると考えられる[推測]。
+
+**役割分担の整理**: アナログ非理想性（製造ばらつき起因で確率的にしか予測できない）は SDK コンテナ側（本ドキュメント）が精密に扱い、デジタル演算（決定論的でノイズを持たない）の正確な固定小数点挙動の検証は Compiler コンテナ側の決定論的ツール（QDQ/funcsim/vidsim, Part B, B.9）に委ねられている。SDK 側でのデジタル演算の扱いは、量子化のみの粗い近似（あるいは無処理）に留まる[推測: 明示的な設計文書は確認できず、実装のカバレッジ差からの推定]。
+
 ---
 
 ## D. 未解明点と限界
 
 ### Part A（SDK コンテナ側）
 1. **`hw_model.randomize(**nonidealities)` の実パラメータ名**: 外部パッケージ `mythic.acm.denali.ref.*`/`mythic.acm.denali.training.polynomial_separable_model` 側に定義され、抽出範囲に含まれないため詳細キーは不明。
-2. **スケジュール/noise_config の実 YAML**: `munc.hydra_configs.noise_config`/`training_model` 内のYAMLが未取得。既定スケジュールの `repeat` 値・`prop`/`confidence` 推奨値・既定 `weight_randomizer` は未確認。
+2. **[解消] Hydra config 合成チェーンと noise_config/training_model の実 YAML**: `m2000.yaml`(`configs/huggingface_classifiers/training/`) → `base_config.yaml`(同ディレクトリ) → `base_config_generic.yaml`(`configs/common/`) の継承チェーン、および `munc.hydra_configs.training_model.{m2000,denali}.yaml`・`munc.hydra_configs.noise_config.{m2000_training_model,denali_training_model,denali_noise_config}.yaml` を実ファイルで確認済み。`m2000.yaml` は `override training_model: m2000`(→denaliのエイリアス)・`override noise_config: m2000_training_model`(→denali_training_model、`nonidealities.{weight,input,adc}_model.enable=True` を設定)を指定し、A.4 の `torchnet.default_torchnet` 経由でこれが `make_analog_model`/`noise_config` に渡る。既定スケジュールの `repeat` 値は依然未確認。
+   - 検索パス解決: `munc.cli.helpers.HydraSearchPathPlugin`(`pkg://munc.hydra_configs`) と `mythic.model_zoo.common.utils.HydraSearchPathPlugin`(`configs/common`) の2つの Hydra 検索パスプラグインが、`munc` パッケージ内設定と `mythic-model-zoo` 側設定を1つの合成に混ぜ込む。
 3. **`munc_acm_signoff` v0.4/v0.5/v0.8 の物理的差異の背景**（較正世代の違いか等）は未確認。
 4. **`train_huggingface` の QAT/蒸留詳細**（`huggingface_classifiers/train.py`）は未読。
 5. **`eval_config.training_args` の具体値**（batch size, workers 等）は未確認。
-6. **BCM ステージ名 "bcm" と Boreas Compute Model の対応関係**: artifact 内 `on_chip_1_bcm.onnx` の命名が BCM を指すという整理は [推測] であり、`dnn_compiler`（doc 01）側での直接的な参照は確認できていない。
+6. **[解消] BCM ステージ名 "bcm" と Boreas Compute Model の対応関係、および BCM の利用範囲**: `on_chip_1_bcm.onnx` の "bcm" は Boreas Compute Model を指すことを `artifact_writer.py` の命名ロジック（`bcm = "_bcm" if "on_chip" in name else ""`）で確定。また BCM は精度評価専用ではなく、この BCM op を含む ONNX が `mythic.model_deployment.rmcr.compile.py`（`get_on_chip_onnx`→`dnn_fw_compile`→`dnn_compile`, `--onnx-file`）経由でそのまま Compiler コンテナの `dnn_compiler` バイナリに渡ることを確認済み（A.6/A.12 参照）。`dnn_compiler` バイナリ自体（C++、非公開）が BCM op をどう解釈するかの内部実装は依然未確認。
 7. **`bevformer_inference.py` が他モデル（ResNet-50/YOLO 系）にも存在するか**: 未確認。ドキュメント上 BEVFormer 専用スクリプトとして案内されているため、他モデルの推論動画生成手段は別途調査が必要[推測]。
 8. **A.13 の可視化ツールとモンテカルロ（A.11）の統合**: `bevformer_inference.py` は単発推論の可視化であり、モンテカルロのスケジュール（重みランダム化を複数サンプル回す）との統合は確認していない——`torchnet` サブコマンドは `build_torchnet_from_onnx` で1つの TorchNet インスタンスを構築するのみで、サンプル間の再ランダム化ループは呼ばない。
 
@@ -519,6 +585,8 @@ GEN2 ガイド §8.3 の `convert_model.py steps=eval_trained` は **Part A の 
 - ワークフロー: `conversion_steps.py`, `munc_cli/helpers.py`, `_session.py`
 - HW 仕様定数: `hw_specs.py`
 - 推論結果の可視化・デモ動画生成（A.13）: `bevformer_inference_support/bevformer_inference_impl.py`, `bevformer_inference_support/custom_utils/{inference,visualization,result_writer,processing,data_loading,ground_truth,nuscenes_cache,nuscenes_gt}.py`
+- ONNX→TorchNet変換・BCM組み込み機構（A.6.1.1/A.6.1.2, 今回追加抽出）: `_torchnet.py`（`TorchNet`/`default_layer_factory`）, `munc_ops/{convert_convs_to_bcm,convert_nodes_to_mythic,switch_bcm,mark_depthwise_convs_as_digital}.py`, `munc_ops/{mythic_conv,mythic_mma,Conv_base,Softmax_base,mythic_softmax}.py`（`munc/_o2t_ops/` 由来）
+- BCM→artifact→Compiler 連携の実証（A.6/A.12, 今回追加抽出）: `munc_ops/{convert_bcm_to_convs,mark_unsupported_ops_off_chip}.py`, `artifact_writer.py`（`write_artifact`）, `_generate_artifact.py`（`generate_standard_artifact_files`）, `_verify.py`（`verify_compiler_model`）, `_session_tools.py`（`is_op_type_supported_on_chip`, `SUPPORTED_ON_CHIP_NODES_{BOREAS,DENALI}`）, `rmcr/{compile,compiler,vnn_compile}.py`（`mythic.model_deployment.rmcr` 由来、`get_on_chip_onnx`→`dnn_fw_compile`→`dnn_compile` が `--onnx-file` で `dnn_compiler` バイナリを起動する箇所）
 
 > 上記以外（`mythic-model-zoo/configs/*.yaml`, `scripts/*.env`, `mythic.acm.denali.*`）は解析用コンテナ内で `docker exec` により確認したのみで、ホストには未抽出。コンテナは解析完了後に削除済み。
 
