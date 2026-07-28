@@ -206,10 +206,29 @@ timestep_duration_accesses_no_simd_ns = max(ACE_DURATION_NS, sram_estimated_dura
 「超過分(excess)」は律速要素別に `total_excess_*` に振り分けられる [perf:717-722, 749-755]
 (どの max 項が採用されたかで分類。デバッグ出力専用の内訳)。
 
+> **重要: `total_duration_ns` は公表レイテンシに使われない。** ここで作る `total_duration_ns`
+> (= 各 timestep でタイル間 max を取り、それを全 timestep で総和 = **「timestep ごと max の合計」**)は
+> 直感的には最終レイテンシに見えるが、**fps 算出には一切使われない**。`frame_latency_ns` / `fps` に
+> 代入されるのは §3.4 の `maximum_bottleneck_ns`(= **タイルごとに全 timestep を累積してから、タイル間で
+> max**)の方である [perf:925-926,940-941]。集約順序が逆の 2 種類の推定値が併存する点に注意:
+>
+> | 変数 | 集約順序 | 用途 |
+> |---|---|---|
+> | `total_duration_ns` | timestep ごとに(タイル max)→ **総和** | epoch 積算・excess 内訳の**デバッグ出力のみ**。fps 不使用 |
+> | `maximum_bottleneck_ns` | タイルごとに(timestep 総和)→ **max** | **公表レイテンシ・fps**(§3.4, §3.5) |
+>
+> 物理的には前者(時刻ごとの律速を積む)の方が現実に近い面もあるが、SDK は後者(各リソースを独立に
+> 理想パッキングした下限どうしの max = ルーフライン的な best-case)を公表値に採用している。理由は
+> コード上明示されていないが、per-timestep の SRAM 時間推定に既知の不正確さがある(§3.3 バイト法の
+> 作者コメント [perf:610-611]「本来はタイルで合算後に max を取るべき」)ことと整合的[推測]。
+
 ### 3.4 最終ボトルネックレイテンシ [perf:757-895]
 
-epoch ベースの `total_duration_ns`(timestep 総和)とは別に、「チップ全体の律速」を次で求める
-(これが公表レイテンシ)。
+§3.3 の `total_duration_ns`(= 「timestep ごと max の合計」)とは**別物**で、**こちらが公表レイテンシ**。
+両者の違いは集約順序で、ここでは **各リソースごとに「タイル別の全 timestep 累積 → タイル間 max」を独立に
+求め、それらの max** を取る(§3.3 末尾の対比表参照)。以下の SRAM/SIMD 項はいずれも「最も忙しい 1 タイルの
+総仕事量を、時間方向に理想的に詰めたときの下限時間」であり、`total_duration_ns` のような時刻ごとの
+同時性は反映しない(best-case, [perf:840-842])。
 
 **ACE クリティカルパス** [perf:771]:
 ```
