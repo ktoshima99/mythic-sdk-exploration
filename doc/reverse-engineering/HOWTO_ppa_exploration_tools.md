@@ -25,7 +25,7 @@
 
 ### 0.1 導入済みの状態(確認済み)
 
-- SDK配布物一式は`/home/ubuntu/mythic_sdk/26.05.2/`にまとめてある(旧`26.05/`と並置、バージョンで区別)。installer zip3本はS3(`s3://mythic-sdk/26.05.2/`)から取得→`archive/`にマージ展開→zip削除済み(再取得はS3から)。起動スクリプトは`run_mythic_sdk_container.sh`・`gpu_run_mythic_sdk_container.sh`・`load_and_tag_docker_images.sh`。
+- SDK配布物一式は`mythic_sdk/v26.05.2/`にまとめてある(リポジトリルート`/home/ubuntu/mythic_sdk/26.05/`配下の`mythic_sdk/`に、バージョン別サブディレクトリ`v26.05.0/`・`v26.05.2/`として集約。この`mythic_sdk/`配下はgit管理外、S3運用)。installer zip3本はS3(`s3://mythic-sdk/26.05.2/`)から取得→`archive/`にマージ展開→zip削除済み(再取得はS3から)。起動スクリプトは`run_mythic_sdk_container.sh`・`gpu_run_mythic_sdk_container.sh`・`load_and_tag_docker_images.sh`。
 - Dockerイメージは`docker images`で確認済み:
   ```
   gcr.io/mythic-devops/mythic-sdk-ubuntu-24.04:m2000-v26.05.2
@@ -64,7 +64,7 @@ Accuracy Simulation用にはGPUが必要で、`gpu_run_mythic_sdk_container.sh`(
 ```bash
 mkdir -p /tmp/ppa_workspace_2605_2/out /tmp/ppa_workspace_2605_2/compiler_configs \
          /tmp/ppa_mythic_root_2605_2 /tmp/ppa_empty_datasets_2605_2
-TRAIN=/home/ubuntu/mythic_sdk/26.05.2/archive/models/training
+TRAIN=/home/ubuntu/mythic_sdk/26.05/mythic_sdk/v26.05.2/archive/models/training
 docker run -d --name mythic_ppa_explore_2605_2b \
   --shm-size 2g \
   --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \

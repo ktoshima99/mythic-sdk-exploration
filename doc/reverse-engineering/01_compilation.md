@@ -1,6 +1,6 @@
 # Mythic M2000 AI アクセラレータ SDK コンパイラ 解析ドキュメント (01: コンパイルフロー)
 
-対象 SDK: `vnnsdk 26.05` / 解析対象展開先: `mythic_sdk/_extracted_compiler/`
+対象 SDK: `vnnsdk 26.05` / 解析対象展開先: `mythic_sdk/v26.05.0/_extracted_compiler/`
 
 > 表記規約:
 > - **断定**: ソースコードから直接確認できた事実。ファイルパス:行番号を併記する。
@@ -610,7 +610,7 @@ top-level enum **`BitSpreadingMode`**: `Normal=0, TwoWay=1, FourWay=2, Nibble=3,
 
 ## 6. 参照ファイル一覧
 
-Python ソース (すべて `mythic_sdk/_extracted_compiler/` 配下):
+Python ソース (すべて `mythic_sdk/v26.05.0/_extracted_compiler/` 配下):
 
 - モデル状態管理: `vnnort/models/vid_model.py`, `vnnort/models/model_archive.py`, `vnnort/models/__init__.py`
 - 最適化: `vnnort/optimizer/optimizer.py`, `vnnort/optimizer/pattern_detection.py`, `vnnort/optimizer/patterns.py`(3705行), `vnnort/optimizer/functions.py`, `vnnort/optimizer/utils.py`, `vnnort/optimizer/optimization_config.py`

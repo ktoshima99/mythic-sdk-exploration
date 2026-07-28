@@ -17,8 +17,8 @@ Mythic M2000 (Denali/ACE) AI アクセラレータ SDK の **精度シミュレ�
 精度シミュレーションを駆動する本体は SDK コンテナ側（`convert_model.py`→`munc`→`conversion_steps.py`）にあり、実データセット（ImageNet/COCO/nuScenes 等）を使う。SDK コンテナの `munc` パッケージには確率的アナログ非理想性モデルが実在する（`munc/_pytorch/noise.py`, `munc/bcm/bcm_models/`, `munc/_monte_carlo/`）。Compiler コンテナ側（`vnnort`）の QDQ 決定論的量子化は、この確率モデルの「ゼロノイズ極限」に相当する下部構造であり、Part A の確率モデルの一部として成立する。§C でこの関係を整理する。
 
 ### 解析手法とソースの所在
-- **Part A**: SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.0`）由来。核心コード（約 8,843 行、`munc` の主要サブパッケージ）はホスト `mythic_sdk/_extracted_sdk/` に抽出済み。ただし `mythic-model-zoo/configs/*.yaml`（Hydra 設定）や `mythic-model-zoo/scripts/*.env` の一部、`mythic.acm.denali.*` 等の外部参照パッケージはホストに抽出されておらず、コンテナ内で内容を確認したのみで再確認できない。これらの箇所は本文中に「(コンテナ内確認, 再検証不可)」と注記する。
-- **Part B**: Compiler コンテナ（`compilerd-bin`）由来。ソースはホスト `mythic_sdk/_extracted_compiler/` に抽出済み。
+- **Part A**: SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.0`）由来。核心コード（約 8,843 行、`munc` の主要サブパッケージ）はホスト `mythic_sdk/v26.05.0/_extracted_sdk/` に抽出済み。ただし `mythic-model-zoo/configs/*.yaml`（Hydra 設定）や `mythic-model-zoo/scripts/*.env` の一部、`mythic.acm.denali.*` 等の外部参照パッケージはホストに抽出されておらず、コンテナ内で内容を確認したのみで再確認できない。これらの箇所は本文中に「(コンテナ内確認, 再検証不可)」と注記する。
+- **Part B**: Compiler コンテナ（`compilerd-bin`）由来。ソースはホスト `mythic_sdk/v26.05.0/_extracted_compiler/` に抽出済み。
 
 ---
 
@@ -409,7 +409,7 @@ structural.onnx --to_training--> mythic.onnx(学習可能Mythic Nodeモデル)
 
 > Part B は Compiler コンテナ側（`vnnort`）の精度評価の部品（QDQ 量子化・推論エンジン・評価メトリクス）を扱う。これらは精度シミュレーション全体ではなく、その構成部品である。
 
-対象ルート: `mythic_sdk/_extracted_compiler/`
+対象ルート: `mythic_sdk/v26.05.0/_extracted_compiler/`
 
 ## B.1 この部品が「何を」シミュレートするか
 

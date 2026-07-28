@@ -3,33 +3,15 @@
 *.tar
 *.tar.gz
 
-# mythic_sdk/: the vendor SDK drop (installer payloads + extracted sources +
-# vendor docs + launch scripts). This whole subtree is expected to be deleted
-# and replaced wholesale when the Mythic SDK version changes. Only a few
-# small, version-independent bits under it are git-tracked (launch scripts,
-# and the extracted .py/.md source used as the analysis target — see below).
-mythic_sdk/archive/
-mythic_sdk/compiler-installer-*/
-mythic_sdk/sdk-docker-image-installer-*/
-mythic_sdk/training-models-installer-*/
+# mythic_sdk/: the vendor SDK drop, one subdirectory per SDK version
+# (mythic_sdk/v26.05.0/, mythic_sdk/v26.05.2/, ...). Each holds installer
+# payloads, extracted sources, vendor docs, and launch scripts. The whole
+# subtree is NOT tracked in git — SDK versions are fetched from S3
+# (s3://mythic-sdk/<version>/) on demand and unpacked here locally.
+mythic_sdk/
 
 # output/: generated artifacts (videos, etc.) — reproducible, not meant for git
 output/
-
-# Extracted analysis sources: keep .py/.md/.txt, drop compiled binaries and libs
-mythic_sdk/_extracted_compiler/**/*.so
-mythic_sdk/_extracted_compiler/**/*.so.*
-mythic_sdk/_extracted_sdk/**/*.so
-mythic_sdk/_extracted_sdk/**/*.so.*
-mythic_sdk/_extracted_compiler/vnncodegen/vid_sdk/bin/
-mythic_sdk/_extracted_compiler/dnn_compiler_base/
-mythic_sdk/_extracted_compiler/funcsim/bin/funcsim
-mythic_sdk/_extracted_compiler/pysim-env/
-mythic_sdk/_extracted_compiler/pyvnnsdk-env/
-mythic_sdk/_extracted_compiler/vnnsdk/
-mythic_sdk/_extracted_compiler/vnnmap/vnnmap
-mythic_sdk/_extracted_compiler/vnncodegen/vnncodegen
-mythic_sdk/_extracted_compiler/vnncodegen/vnnrtgen
 
 # OS/editor cruft
 .DS_Store

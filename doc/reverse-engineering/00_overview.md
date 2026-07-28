@@ -1,7 +1,7 @@
 # Mythic M2000 SDK 処理ロジック解析ドキュメント（総合概要・索引）
 
 対象 SDK: **Mythic M2000 SDK v26.05.0**（内部呼称 `vnnsdk 26.05`）
-解析対象展開先: `mythic_sdk/_extracted_compiler/`（コンパイラコンテナ由来）、`mythic_sdk/_extracted_sdk/`（SDK コンテナ由来）
+解析対象展開先: `mythic_sdk/v26.05.0/_extracted_compiler/`（コンパイラコンテナ由来）、`mythic_sdk/v26.05.0/_extracted_sdk/`（SDK コンテナ由来）
 
 ---
 

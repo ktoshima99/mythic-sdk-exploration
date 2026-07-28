@@ -173,15 +173,15 @@ sed -e "s#/workspace/carla_output/#/workspace/carla_output_v2/#" \
 
 ## 6. 可視化バグの既知の修正（毎回のコンテナ再作成後に必要）
 
-`bevformer_lib/custom_utils/visualization.py` の BEV パネル描画には、自車マーカー(`_layer_ego`)と物体位置(`_layer_boxes`/`_layer_lidar`/`_layer_radar`)の座標変換規則が食い違うバグがあった（前方が右に見える、さらに左右も反転する）。**修正パッチはホスト側リポジトリの `mythic_sdk/_extracted_sdk/bevformer_lib/custom_utils/visualization.py` で git 管理されている。**コンテナを再作成すると SDK 側のファイルは元の状態に戻るため、毎回このパッチを再適用する必要がある。
+`bevformer_lib/custom_utils/visualization.py` の BEV パネル描画には、自車マーカー(`_layer_ego`)と物体位置(`_layer_boxes`/`_layer_lidar`/`_layer_radar`)の座標変換規則が食い違うバグがあった（前方が右に見える、さらに左右も反転する）。**修正パッチはホスト側リポジトリの `mythic_sdk/v26.05.0/_extracted_sdk/bevformer_lib/custom_utils/visualization.py` で git 管理されている。**コンテナを再作成すると SDK 側のファイルは元の状態に戻るため、毎回このパッチを再適用する必要がある。
 
 ```bash
 cd <repo-root>
-docker cp mythic_sdk/_extracted_sdk/bevformer_lib/custom_utils/visualization.py \
+docker cp mythic_sdk/v26.05.0/_extracted_sdk/bevformer_lib/custom_utils/visualization.py \
   mythic_sdk_impl:/root/mythic_sdk/v26.05.0/mythic-model-zoo/mythic/model_zoo/bevformer/bevformer_lib/custom_utils/visualization.py
 ```
 
-修正内容の詳細（`ix,iy` の座標変換式を `_layer_ego` の規約に統一）は [FUTURE_bevformer_inference_run.md](FUTURE_bevformer_inference_run.md) の「BEVパネルの座標系不整合を修正」を参照。`git diff mythic_sdk/_extracted_sdk/bevformer_lib/custom_utils/visualization.py` で変更点を確認できる。
+修正内容の詳細（`ix,iy` の座標変換式を `_layer_ego` の規約に統一）は [FUTURE_bevformer_inference_run.md](FUTURE_bevformer_inference_run.md) の「BEVパネルの座標系不整合を修正」を参照。`git diff mythic_sdk/v26.05.0/_extracted_sdk/bevformer_lib/custom_utils/visualization.py` で変更点を確認できる。
 
 ---
 
