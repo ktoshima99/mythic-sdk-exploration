@@ -335,12 +335,23 @@ ACE Utilization = (total_ace_ops * ACE_DURATION_SEC / PER_CHIP_ACE_COUNT)
 
 ### 3.8 アナログ+デジタル合算 [perf:1292-1306]
 
-デジタル NPU JSON 提供時のみ。デジタルは直列加算(パイプライン重なりなしの保守的仮定):
+デジタル NPU JSON(`--digital-npu-log-path`)提供時のみ。**合算に登場する値のうち `perf_analysis.py` が
+計算するのは `frame_latency_ns` / `Combined fps` だけで、`npu_fps` と `macs_bn` は JSON からの読み取り値**
+(`profiling.fps` / `profiling.macs_bn`, [perf:269,272])。JSON はデジタル NPU 側のコンパイラ/プロファイラが
+生成し、`perf_analysis.py` は消費するのみ。
+
+**合算レイテンシ**(デジタルは直列加算 = パイプライン重なりなしの保守的仮定):
 ```
 frame_latency_ns += 1e9 / npu_fps                                    [perf:1303]
+   （+= の左辺初期値はアナログ側公表レイテンシ maximum_bottleneck(_accesses)_ns [perf:925,940]）
+   = アナログ最終ボトルネック(ns) + デジタル NPU 1 フレーム時間(ns)
 Combined fps = 1e9 / frame_latency_ns                                [perf:1305]
-デジタル MAC = macs_bn * 1e9                                         [perf:1295]
 ```
+- `npu_fps`(`profiling.fps`): デジタル NPU 単独の推論スループット。**合算レイテンシに効くのはこの値のみ**
+  (`1e9/npu_fps` で ns 化して加算)。
+- `macs_bn`(`profiling.macs_bn`, "bn"=十億単位): デジタル NPU 向け総 MAC 数。**表示専用メトリクスで、
+  `Total Estimated MACs = macs_bn * 1e9` [perf:1295] として出力するだけ。レイテンシ計算には一切使わない。**
+
 PCIe 転送オーバーヘッドは含まないと明記 [perf:1308-1316]。
 
 ---
