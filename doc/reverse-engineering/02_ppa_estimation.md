@@ -26,9 +26,27 @@ M2000 は「アナログ NPU(ACE アレイ、28nm)」+「デジタル NPU(オプ
 両者は独立プログラムであり、性能側の面積推定は ACE アレイのみを対象とする。電力側はアナログ
 (28nm 固定)+デジタル(5/12/28nm 選択)を分けて算出する。
 
+> **入力の粒度に関する注意(重要)**: 上表の「入力」は各 **スクリプト単体** から見た入力である。
+> PPA 推定フロー全体(`ppa-estimator --estimate-performance`)の視点では区別が要る:
+> - **`final.l0.pb`(L0 protobuf)はコンパイラの出力**。コンパイル時点で確定する静的 IR で、
+>   PPA 推定フローに **外部から与えられる入力**。`power_estimator.py` はこれを直接読む。
+> - **`perf_trace_dump.h5` はコンパイラの出力ではない**。`--estimate-performance` 実行時に
+>   フロー内部で `funcsim`(機能シミュレータ、CPU 逐次イベントドリブン)がコンパイル成果物を
+>   実行して **その場で生成する中間トレース**であり、`artifacts/ppa/` 配下に書き出される。
+>   したがって **PPA 推定フロー全体から見れば `.h5` は外部入力ではなく内部生成物**であり、
+>   フローへの外部入力はあくまでコンパイル成果物(tar)である。`.h5` が「入力」なのは、
+>   その内部生成物を読む **`perf_analysis.py` スクリプト単体の視点に限った話**である。
+>
+> まとめると、フローへの外部入力は「コンパイル成果物」1 つで、`funcsim` が `.h5` を生成 →
+> `perf_analysis.py` が `.h5` を、`power_estimator.py` が `final.l0.pb` を読む、という直列関係。
+
 ---
 
 ## 2. 入力データ(HDF5 構造)
+
+> 本節の「入力」は `perf_analysis.py` スクリプト単体から見た入力である。この HDF5
+> (`perf_trace_dump.h5`)は `--estimate-performance` フロー内で `funcsim` が生成する中間トレース
+> であり、コンパイラの出力でもフローへの外部入力でもない(§1 の注意、及び §9 を参照)。
 
 `perf_analysis.py` の docstring [perf:33-70] と実パース処理から、HDF5 の全データセット構造は次の通り。
 
@@ -674,10 +692,13 @@ GLOBAL コメント [pow:64]「FF エネルギー 2fF/toggle なので複数ホ�
 | `mythic_sdk/v26.05.0/_extracted_compiler/mythic_pkg/irs/l0/vector_processing_pb2.py` | SIMD(salu)関連 |
 | `mythic_sdk/v26.05.0/_extracted_compiler/mythic_pkg/target_spec/target_pb2.py`, `resources_pb2.py` | ターゲット/リソース定義(ir が import) |
 
-入力データファイル(実行時):
-- `perf_trace_dump.h5`(HDF5 トレース、`--hdf5-path`)
-- L0 protobuf(`--l0-pb-path`、`Crate` としてパース [pow:284-285])
-- 任意 JSON: packet log / event log / digital NPU log
+入力データファイル(実行時)。**生成元でスクリプト入力とフロー外部入力を区別する**:
+- `perf_trace_dump.h5`(HDF5 トレース、`--hdf5-path`) — `perf_analysis.py` の入力だが、**コンパイラ出力
+  でもフロー外部入力でもない**。`--estimate-performance` 実行時に `funcsim` がコンパイル成果物を
+  実行して `artifacts/ppa/` 配下に生成する**内部中間トレース**(§1・§2 の注意参照)。
+- L0 protobuf(`--l0-pb-path`、`Crate` としてパース [pow:284-285]) — `power_estimator.py` の入力で、
+  **コンパイラの出力(`final.l0.pb`)= フローへの外部入力**。`.h5` と異なり funcsim 実行前に確定済み。
+- 任意 JSON: packet log / event log(`.h5` と同じく `funcsim`/PPA フローが生成)/ digital NPU log。
 
 ---
 
