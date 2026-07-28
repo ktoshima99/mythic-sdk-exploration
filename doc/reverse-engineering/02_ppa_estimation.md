@@ -113,12 +113,28 @@ PER_CHIP_ACE_TILE_COUNT= num_aces // 4  (デフォルト 24//4 = 6 タイル)
 
 ### 3.2 パース段階での集計
 
+> **最重要: パース段階では 2 系統の集計が並行して積まれる。** 各 SRAM アクセス行 i を読むたびに、
+> 同じ値が **(A) timestep 別** と **(B) タイル別総計** の 2 つの辞書に**同時に**加算される。
+> この 2 系統がそれぞれ後段の別の計算に供給される:
+> - **(A) `ts_accesses[tile][timestep][...]`** → §3.3 の per-timestep 律速(`total_duration_ns`、
+>   デバッグ用)の元。timestep 軸を保持する。
+> - **(B) `*_per_tile[tile]`**(`data_bytes_read_per_tile` 等) → **§3.4 の最終ボトルネック(公表
+>   レイテンシ)の積算元**。timestep 軸を**持たず**、そのタイルの全 timestep 分を 1 つの累積値に
+>   畳み込む。**§3.4 の `data_bytes_read_per_tile[t]` 等はここで積算済みの値をそのまま参照する。**
+>
+> つまり「§3.4 の積算はどこで行われるのか」の答えは**このパース段の (B)**。§3.4 自体は積算を行わず、
+> ここで畳み込まれた per-tile 累積を帯域で割って時間化し max を取るだけ(§3.4 の逆参照注記も参照)。
+
 **SRAM 集計** [perf:373-411]: 各アクセス行 i について:
 
-- `ts_accesses[tile][timestep]["all_accesses"] += num_accesses[i]` [perf:375]
-- read(access_type=0)/write(=1) × control(category=2)/data(category=1) の 4 象限で
-  バイト数(`+= size[i]`)とアクセス数(`+= num_accesses[i]`)を別々に蓄積 [perf:376-389]
-- 同時にタイル単位の総計 `*_per_tile` も蓄積 [perf:392-411]
+- **(A) timestep 別**: `ts_accesses[tile][timestep]["all_accesses"] += num_accesses[i]` [perf:375]。
+  read(access_type=0)/write(=1) × control(category=2)/data(category=1) の 4 象限で
+  バイト数(`+= size[i]`)とアクセス数(`+= num_accesses[i]`)を別々に蓄積 [perf:376-389]。
+- **(B) タイル別総計** `*_per_tile`(timestep をまたいで合算)も同じ 4 象限で同時に蓄積 [perf:392-411]:
+  - `data_bytes_read_per_tile[tile] += size[i]` / `data_bytes_written_per_tile[tile] += size[i]`
+  - `control_bytes_read_per_tile[tile] += size[i]` / `control_bytes_written_per_tile[tile] += size[i]`
+  - アクセス法用に `data_read_accesses_per_tile` / `control_read_accesses_per_tile` 等も同様に累積。
+  - `category` が 0/3/4(なし/管理/デバッグ)は `other_bytes_per_tile` へ入るのみで時間計算に不使用 [perf:410-411]。
 
 **ACE 集計** [perf:426-436]: ACE の各演算について
 
@@ -130,7 +146,11 @@ ace_mac_count  += int(num_inputs) * int(num_outputs)   [perf:436]
 MAC 数は「入力数 × 出力数」で近似(アナログクロスバーの積和数)。
 
 **SIMD 集計** [perf:447-456]: timestep ごとに `simd_operations += 1`、
-`simd_input_bytes += num_input_bytes[i]`。
+`simd_input_bytes += num_input_bytes[i]`。あわせてタイル別総計 `simd_bytes_per_tile[tile]`
+(§3.4 の SIMD 最悪タイル時間の積算元、(B) 系統)も蓄積される。
+
+ACE も同様に、per-timestep ではなくタイル(ACE)別総計 `ace_operations` / `ace_mac_count` として
+累積され、§3.4 の `total_ace_duration_ns` と §3.6 の利用率の元になる。
 
 ### 3.3 timestep ごとの所要時間(2 手法並行)[perf:511-755]
 
@@ -230,15 +250,29 @@ timestep_duration_accesses_no_simd_ns = max(ACE_DURATION_NS, sram_estimated_dura
 総仕事量を、時間方向に理想的に詰めたときの下限時間」であり、`total_duration_ns` のような時刻ごとの
 同時性は反映しない(best-case, [perf:840-842])。
 
+> **積算はここでは行わない — 元は §3.2(B) の per-tile 累積。** 下式の `data_bytes_read_per_tile[t]` /
+> `simd_bytes_per_tile[t]` 等は **§3.2 のパース段で timestep をまたいで積算済みの値**であり、§3.4 は
+> それを参照するだけ。各項の計算は 2 ステップに分解できる:
+> 1. **タイル間 max**: per-tile 累積(バイト or アクセス数 or SIMD バイト)が最大のタイルを選ぶ
+>    (`max_..._by_any_tile = max_tile(...)`)。→ 「最も忙しいタイル」の総仕事量。
+> 2. **時間化**: その累積量を帯域定数で割る(`÷ SRAM_BYTES_*_PER_CYCLE` / `÷ TOTAL_SRAM_ACCESSES_PER_CYCLE`
+>    / `÷ SIMD_VECTOR_WIDTH`、× `CLOCK_PERIOD_NS`)。定数は §6.1 参照。
+>
+> **ACE 項だけは例外**で、per-tile 累積を割るのではなく `len(timesteps) × 160ns`(timestep 数 × ACE 1 回)
+> という直列パス長。したがって最終 max で比較される 4 項は集約方法が非対称(ACE=直列総和、
+> SRAM/SIMD=最悪タイルの理想パッキング下限)である点に注意。
+
 **ACE クリティカルパス** [perf:771]:
 ```
 total_ace_duration_ns = len(timesteps) * ACE_DURATION_NS
 ```
 = timestep 数 × 160ns(全 ACE 演算が直列に 1 timestep ずつ進む最小パス)。
 
-**タイル別最大 SRAM 時間(バイト法)** [perf:844-859]:
+**タイル別最大 SRAM 時間(バイト法)** [perf:844-859]。`*_per_tile[t]` は §3.2(B) の累積値:
 ```
+# ステップ1: タイル間 max(最も忙しいタイルの全timestep累積バイト)
 max_bytes_read_by_any_tile  = max_tile( data_bytes_read_per_tile[t] + control_bytes_read_per_tile[t] )
+# ステップ2: 帯域で割って時間化
 max_sram_read_duration_ns   = max_bytes_read_by_any_tile  / SRAM_BYTES_READ_PER_CYCLE  * CLOCK_PERIOD_NS
 max_sram_write_duration_ns  = max_bytes_written_by_any_tile / SRAM_BYTES_WRITTEN_PER_CYCLE * CLOCK_PERIOD_NS
 ```
