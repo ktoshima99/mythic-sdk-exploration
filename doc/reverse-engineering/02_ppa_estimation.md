@@ -611,6 +611,8 @@ TOPS/W = 2 * MAX_ACE_INPUTS * MAX_ACE_OUTPUTS / energy / 1e12                   
 
 ## 5. 面積推定
 
+> **注記(バージョン差・運用指針)**: 本節は **v26.05.0 の抽出ソース `perf_analysis.py` に書かれている面積計算式そのものの記録**であり、SKU の面積比較にこの式を使えという推奨ではない。この式の傾きは `42.18/4 = 10.545 mm²/ACE` で、**データシート物理値 5.278 mm²/ACE(=380/72)のちょうど 2.00 倍**であり物理ダイ面積ではない(加えて m2072 では表示 ACE 数が 24 に化けるバグもある)。さらに **v26.05.2 の CLI `mythic-ppa-estimators` はこの `Estimated Die Area` 行自体を出力しない**(実行時ログ観察ベース。v26.05.2 抽出ソースは本ツリーに未展開)。**実際の SKU 面積比較には物理傾き 5.278 mm²/ACE を使うこと**(24=158 / 48=253 / 72=380 mm²)。詳細は [PLAN_bevformer_ppa_exploration.md](PLAN_bevformer_ppa_exploration.md) §4.1、[HOWTO_ppa_exploration_tools.md](HOWTO_ppa_exploration_tools.md) §2、及び [[ppa-die-area-not-physical]] を参照。
+
 `perf_analysis.py` のみが算出。ACE アレイのタイルのみ対象(デジタル・I/O は含まない)。
 
 定数 [perf:217-221]:
