@@ -34,11 +34,17 @@ M2000 はフラッシュメモリセルをアナログ乗算器として使う�
 本 SDK のエントリーポイントは「①再学習 / ②**精度シミュレーション** / ③compiler / ④PPA estimator」の 4 つ。②はデータフロー上、①の出力から分岐する末端の枝であり、③・④とは相互依存しない（`00_overview.md` §2）:
 
 ```
-①再学習 ── train ──▶ trained.onnx ─┬─▶ ②精度シミュレーション（本ドキュメント）── metrics.json（末端）
-                                    └─▶ ③compiler ── to_acm → artifact → compile ──▶ ④PPA estimator
+①再学習 ── train ──▶ trained.onnx ─┬─▶ ②精度シミュ eval_trained / mc_eval_trained ── metrics.json（末端）
+                                    │        （MYTHIC を評価。to_acm の前）
+                                    └─▶ ③compiler ── to_acm ─▶ acm.onnx ─┬─▶ ②精度シミュ eval_acm ── metrics.json（末端）
+                                                    (BCM)               │        （BCM を評価。to_acm の後）
+                                                                        └─▶ create_artifact → compile ──▶ ④PPA estimator
 ```
 
-精度シミュレーションの入力は①再学習の成果物 `trained.onnx` であり、③compiler 側の `to_acm`/`acm.onnx` には依存しない。
+②精度シミュレーションには**評価する状態の異なる 2 経路**がある。どちらも出力は metrics.json（末端の枝）で、firmware は作らない:
+
+- **`eval_trained` / `mc_eval_trained`**（本ドキュメントの主対象）: ①の成果物 `trained.onnx`（**MYTHIC**）を、`to_acm` より**前**に評価する。③compiler には依存しない。
+- **`eval_acm`**（§4.3, generic フロー）: `to_acm` が出力する `acm.onnx`（**BCM/ACM**）を、`to_acm` より**後**・`create_artifact` に渡す前に評価する。`to_acm` は SDK コンテナ内で完結し Compiler コンテナを呼ばないため、これも②の枠内（評価専用で firmware は生成しない）。`create_artifact`(③) が消費するのと同じ BCM を評価に流用する枝。
 
 **起動経路の非対称性**: ②精度シミュレーションには専用 CLI が無く、**オーケストレーション層 `convert_model.py steps=eval_trained` からのみ実行できる**（③コンパイルは `mythic-compiler` を直接叩く経路もあるのと対照的）。各エントリーポイントとオーケストレーション層の対応の全体像は `00_overview.md` §2.5 を参照。
 
@@ -93,9 +99,9 @@ flowchart TD
     PICK -->|"mc_eval_trained → collect_accuracy_data_step (§4.5)"| S3
     PICK -.->|"to_acm / create_artifact / compile<br/>= ③compiler 側。精度シミュではない"| SKIP["(本ドキュメント対象外)"]
 
-    S1["eval_trained: Session を 1 個構築 → 内側テンプレートを 1 回実行"] --> INNER
-    S2["eval_acm: Session を 1 個構築（+SwitchBCM で忠実度切替）→ 1 回実行"] --> INNER
-    S3["mc_eval_trained: サンプル毎に Session を作り直し<br/>内側テンプレートを N 回繰り返す (§7)"] --> INNER
+    S1["eval_trained: trained.onnx(MYTHIC) を評価。to_acm の前<br/>Session を 1 個構築 → 内側テンプレートを 1 回実行"] --> INNER
+    S2["eval_acm: acm.onnx(BCM) を評価。to_acm の後 (generic フロー)<br/>Session を 1 個構築（+SwitchBCM で忠実度切替）→ 1 回実行"] --> INNER
+    S3["mc_eval_trained: trained.onnx(MYTHIC) を評価。to_acm の前<br/>サンプル毎に Session を作り直し 内側テンプレートを N 回繰り返す (§7)"] --> INNER
 
     subgraph INNERBOX["内側テンプレート: 1 つの Session の中身 (§4.1) — 上の各ステップが自前で回す"]
         INNER["Session を構築 (§4.1)<br/>SessionFromConfig(cfg)"] --> SESS["ONNX ロード<br/>(eval_acm は SwitchBCM で忠実度切替)"]
@@ -106,6 +112,8 @@ flowchart TD
 ```
 
 > **図の読み方**: `eval_trained` / `eval_acm` / `mc_eval_trained` は**合流しない**。`steps=` で指定した**いずれか**が実行され、実行されたステップが**それぞれ独立に**内側テンプレート（Session 構築 → 推論 → メトリクス記録）を回す。`eval_trained`/`eval_acm` はテンプレートを 1 回、`mc_eval_trained` はサンプル毎に Session を作り直してテンプレートを N 回繰り返す点が異なる（§7）。下段の INNERBOX は「1 Session 分の共通処理」を 1 度だけ描いた代表図であり、複数ステップが 1 個の Session を共有するわけではない。
+>
+> **`to_acm` との前後関係**: `eval_trained`/`mc_eval_trained` は `to_acm` の**前**で MYTHIC（`trained.onnx`）を評価し、`eval_acm` は `to_acm` の**後**で BCM（`acm.onnx`）を評価する（→ 図の点線 `to_acm` の下流に位置する。§1 の位置づけ図・`00_overview.md` §3.5 参照）。3 つとも出力は metrics.json の末端枝で、点線側の firmware 生成（create_artifact/compile）には進まない。
 
 以下、外側（§3.2）→ 内側（§4）の順に詳細を述べる。
 
@@ -117,6 +125,8 @@ flowchart TD
 to_structural → to_training → train │ eval_trained → summarize_metrics │ to_acm → create_artifact → compile
 └──────── ①再学習 ──────────┘ └──── ②精度シミュレーション ────┘ └──────── ③compiler ────────┘
 ```
+
+これは M2000 標準フロー（`m2000.yaml`）の並び。ここに現れる②精度シミュは `to_acm` の**前**の `eval_trained` のみ。一方 **`eval_acm` はこの標準フローには含まれず、generic フロー側で `to_acm` の後**（`… train → to_acm → eval_acm → create_artifact → compile`）に位置する。`eval_trained` と `eval_acm` は「同じ位置の別モード」ではなく、**評価するモデル状態が違うので step_order 上の位置も異なる**（詳細は §1 の位置づけ図・§4.3、`00_overview.md` §2.1）。
 
 **`run_conversion_steps` の動き**（`munc_cli/helpers.py`, [推測: L369-426 は解析時点、抽出ソースで再確認可]）: ユーザーがコマンドラインで渡す `steps=eval_trained` は「この一覧のうち **どれを有効化するか**」の指定。実行機構は次の通り:
 

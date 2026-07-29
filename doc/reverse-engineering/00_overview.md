@@ -58,15 +58,26 @@ SDK 内部では旧社名 **videantis** 由来の `vid*` プレフィックス�
 
 `mythic-model-zoo` の全ステップは、1 本の順序付きリスト `step_order` に定義されている（`conversion_steps.py`）。ユーザーの 4 エントリーポイント（§2.5）のうち ①再学習・②精度シミュ・③compiler は、この列の**連続した区間**を担当する:
 
+**(a) M2000 標準フロー（`m2000.yaml`）** — 精度評価は `to_acm` の**前**の `eval_trained` だけ:
+
 ```
  to_structural ─▶ to_training ─▶ train │ eval_trained ─▶ summarize_metrics │ to_acm ─▶ create_artifact ─▶ compile
 └──────────── ① 再学習 ─────────────┘ └──── ② 精度シミュレーション ────┘ └──────────── ③ compiler ────────────┘
         （出力: trained.onnx）              （出力: metrics.json）              （出力: firmware artifact）
 ```
 
-**ただし「列に並んでいる＝直列にデータ依存」ではない**。②精度シミュ（`eval_trained`）と③compiler（`to_acm`〜）は、どちらも①の出力 `trained.onnx` を入力とする**独立した並行枝**であり、②は③の前提ではない（②は学習結果を評価する末端の枝）。列が一直線なのは列挙上の都合で、実データ依存は次の分岐図の通り。
+**(b) generic フロー** — 精度評価は `to_acm` の**後**の `eval_acm`。`to_acm` が作る BCM(ACM) 表現を評価する:
 
-- `eval_acm` / `mc_eval_trained`（②の別モード）は `step_order` の必須項ではなく、②区間で選択的に走る（doc 03 §3.2）。
+```
+… train ─▶ to_acm ─▶ eval_acm ─▶ create_artifact ─▶ compile
+              │         └─ acm.onnx を 6 階層忠実度で評価（出力: metrics.json）… ② 精度シミュ
+              └─ trained.onnx(MYTHIC) → acm.onnx(BCM) へ変換 … ③ compiler の前段
+```
+
+**重要 —「列に並んでいる＝直列にデータ依存」ではない**。②精度シミュと③compiler は、いずれも同じ元モデルから**分岐する並行枝**であり、②は③の前提ではない（②は評価して metrics を出す末端）。
+
+- **`eval_trained`（フロー a）と `eval_acm`（フロー b）は別ステップ・別位置**。前者は `to_acm` の**前**で `trained.onnx`(MYTHIC) を、後者は `to_acm` の**後**で `acm.onnx`(BCM) を評価する。両者とも出力は metrics.json（＝②精度シミュ）で、firmware は作らない（§3.5 の状態遷移図・doc 03 §3.2/§4.3）。
+- `mc_eval_trained`（`eval_trained` のモンテカルロ版）は `trained.onnx` を入力とし、フロー a と同じ位置。`step_order` の必須項ではなく明示指定時に走る。
 - ④PPA 推定は `step_order` に含まれない独立 CLI（コンパイル成果物の下流。§2.5）。
 
 ### 2.2 データ依存の分岐図
@@ -197,10 +208,15 @@ GEN2 ユーザーが直接実行する CLI は 3 つ（`doc/user-guides/GEN2 Use
 | `eval_trained` | MYTHIC を読むだけ（TorchNet 化して評価）| MYTHIC | ② |
 | `summarize_metrics` | 状態に触れない（metrics.json 集計）| — | ② |
 | `to_acm` | **進める** | MYTHIC → **BCM** (=ACM) | ③ |
+| `eval_acm` | BCM を読むだけ（`SwitchBCM` で忠実度切替→評価）| BCM | ② |
 | `create_artifact` | **進める** | BCM → COMPILER | ③ |
 | `compile` | COMPILER を消費（Compiler コンテナへ）| （SDK 側状態の終端）| ③ |
 
-つまり **状態を進めるのは `to_structural`/`to_training`/`to_acm`/`create_artifact` の 4 つだけ**で、`train`/`eval_trained`/`summarize_metrics`/`compile` はそれぞれ MYTHIC / MYTHIC / — / COMPILER という**同じ状態の上で動く**。§2 のフローが 8 ステップなのに下図の遷移が 4 本の矢印なのはこのためである。また `eval_acm`（②の別モード）は BCM 状態を読む評価なので、`to_acm` 実行後に成り立つ。
+つまり **状態を進めるのは `to_structural`/`to_training`/`to_acm`/`create_artifact` の 4 つだけ**で、`train`/`eval_trained`/`eval_acm`/`summarize_metrics`/`compile` はいずれも MYTHIC / MYTHIC / **BCM** / — / COMPILER という**同じ状態の上で動く**（読むだけ／重み学習）。§2 のフローがステップ数の割に下図の遷移が 4 本の矢印なのはこのためである。
+
+**②精度シミュの評価ステップは、どのモデル状態を読むかで位置が決まる**:
+- `eval_trained` / `mc_eval_trained` … **MYTHIC** を読む → `to_acm` の**前**（フロー a、§2.1）
+- `eval_acm` … **BCM** を読む → `to_acm` の**後**（フロー b、§2.1）。`to_acm` が作った BCM を `create_artifact` に渡す前に評価に流用する枝
 
 ### SDK コンテナ側のモデル状態（`munc._constants.MODELType`, `_session.py` の状態遷移）
 
@@ -210,10 +226,13 @@ GEN2 ユーザーが直接実行する CLI は 3 つ（`doc/user-guides/GEN2 Use
               ┌── ① 再学習 ──────────────┐         ┌── ③ compiler ─────────────┐
 ORIGINAL ──to_structural──▶ (structural) ──to_training──▶ MYTHIC ──to_acm──▶ BCM ──create_artifact──▶ COMPILER ──compile──▶（Compiler コンテナへ）
 OriginalModel               中間graph                    MythicModel        BCMModel               CompilerModel
-                                                          │  ▲
-                                        ② eval_trained ───┘  │ train（重み学習, MYTHIC のまま）
-                                        （MYTHIC を TorchNet 化して評価）
+                                                          │  ▲                │
+                       ② eval_trained / mc_eval_trained ──┘  │ train           └── ② eval_acm
+                          （MYTHIC を評価。to_acm の前）        （重み学習,        （BCM を SwitchBCM で
+                                                              MYTHIC のまま）      忠実度切替して評価。to_acm の後）
 ```
+
+> ②精度シミュには**入口が 2 つ**ある: `to_acm` の**前**で MYTHIC を評価する `eval_trained`（+モンテカルロ版 `mc_eval_trained`）と、`to_acm` の**後**で BCM を評価する `eval_acm`。どちらも下向き/上向きの分岐＝**評価して metrics.json を出す末端の枝**であり、本線（COMPILER→compile）を進めるわけではない。`eval_acm` が読む BCM は `create_artifact`(③) が消費するのと同じ `to_acm` の出力で、同じ中間表現を評価と firmware 生成に分けて使う。
 
 | モデル状態 / 中間表現 | 実体・クラス | 役割 | 使われるステップ |
 |---|---|---|---|
