@@ -54,6 +54,23 @@ SDK 内部では旧社名 **videantis** 由来の `vid*` プレフィックス�
 
 凡例: 【S】=SDKコンテナで実行  【C】=Compilerコンテナで実行
 
+### 2.1 ステップ列（`step_order`）と ①②③ の担当区間
+
+`mythic-model-zoo` の全ステップは、1 本の順序付きリスト `step_order` に定義されている（`conversion_steps.py`）。ユーザーの 4 エントリーポイント（§2.5）のうち ①再学習・②精度シミュ・③compiler は、この列の**連続した区間**を担当する:
+
+```
+ to_structural ─▶ to_training ─▶ train │ eval_trained ─▶ summarize_metrics │ to_acm ─▶ create_artifact ─▶ compile
+└──────────── ① 再学習 ─────────────┘ └──── ② 精度シミュレーション ────┘ └──────────── ③ compiler ────────────┘
+        （出力: trained.onnx）              （出力: metrics.json）              （出力: firmware artifact）
+```
+
+**ただし「列に並んでいる＝直列にデータ依存」ではない**。②精度シミュ（`eval_trained`）と③compiler（`to_acm`〜）は、どちらも①の出力 `trained.onnx` を入力とする**独立した並行枝**であり、②は③の前提ではない（②は学習結果を評価する末端の枝）。列が一直線なのは列挙上の都合で、実データ依存は次の分岐図の通り。
+
+- `eval_acm` / `mc_eval_trained`（②の別モード）は `step_order` の必須項ではなく、②区間で選択的に走る（doc 03 §3.2）。
+- ④PPA 推定は `step_order` に含まれない独立 CLI（コンパイル成果物の下流。§2.5）。
+
+### 2.2 データ依存の分岐図
+
 **重要**: 精度シミュレーションとコンパイルは直列ではなく、**再学習が生成する学習済み ONNX（`trained.onnx`）から並行して分岐する**枝である。精度シミュ（`eval_trained`）はコンパイルの前提ではなく、学習結果を評価する末端の枝。コンパイル（`to_acm`→`create_artifact`）も同じ `trained.onnx` を独立に入力する。
 
 ```
@@ -91,7 +108,7 @@ SDK 内部では旧社名 **videantis** 由来の `vid*` プレフィックス�
 
 補足:
 - **PPA 推定はコンパイルの下流**（コンパイル成果物 `perf_trace_dump.h5` / vnn JSON を入力とする）であり、これは直列関係で正しい。
-- `mythic-model-zoo` 内では全ステップが 1 つのステップ列 `to_structural→to_training→train→eval_trained→…→to_acm→create_artifact→compile` に定義されているが、`eval_trained`（枝A）と `to_acm`/`create_artifact`（枝B）は**互いに依存せず、どちらも `train` の出力 `trained.onnx` を入力とする独立した枝**である（doc 03 §3.2 参照）。順番に並んでいるのは列挙上の都合で、データ依存ではない。
+- この分岐図は §2.1 の一列 `step_order` を**データ依存の観点で描き直したもの**。`eval_trained`（枝A）と `to_acm`/`create_artifact`（枝B）は互いに依存せず、どちらも `train` の出力 `trained.onnx` を入力とする独立した枝である（doc 03 §3.2 参照）。
 - `eval_trained` は step_type=`eval_onnx`（精度シミュ内の1ステップ名）。
 
 このステップ列（`step_order`）を誰がどう起動するか、ユーザーが叩く CLI との関係は次の §2.5 で整理する。
@@ -168,13 +185,34 @@ GEN2 ユーザーが直接実行する CLI は 3 つ（`doc/user-guides/GEN2 Use
 
 学習済みモデルは、SDK コンテナ（`munc`）→ Compiler コンテナ（`vnnort`）へと進む過程で**複数の中間表現（モデル状態）**を辿る。各状態は特定のクラス／グラフ形式で表現され、`BCM` はそのうちの 1 つである。BCM だけが中核なのではなく、以下が並ぶ「状態の連鎖」として理解するのが正確。
 
+### §2 のステップ列と、この状態遷移の関係
+
+§2.1 の `step_order`（8 ステップの一列フロー）と、本節のモデル状態遷移は**別の見方の同じもの**である。対応づけの鍵は、**ステップには「状態を次へ進めるもの」と「ある状態のまま実行するもの」の 2 種類がある**という点:
+
+| step_order のステップ | 状態への作用 | 遷移後の状態 | ①②③ |
+|---|---|---|---|
+| `to_structural` | **進める** | ORIGINAL → structural | ① |
+| `to_training` | **進める** | structural → **MYTHIC** | ① |
+| `train` | MYTHIC のまま（重みを学習）| MYTHIC | ① |
+| `eval_trained` | MYTHIC を読むだけ（TorchNet 化して評価）| MYTHIC | ② |
+| `summarize_metrics` | 状態に触れない（metrics.json 集計）| — | ② |
+| `to_acm` | **進める** | MYTHIC → **BCM** (=ACM) | ③ |
+| `create_artifact` | **進める** | BCM → COMPILER | ③ |
+| `compile` | COMPILER を消費（Compiler コンテナへ）| （SDK 側状態の終端）| ③ |
+
+つまり **状態を進めるのは `to_structural`/`to_training`/`to_acm`/`create_artifact` の 4 つだけ**で、`train`/`eval_trained`/`summarize_metrics`/`compile` はそれぞれ MYTHIC / MYTHIC / — / COMPILER という**同じ状態の上で動く**。§2 のフローが 8 ステップなのに下図の遷移が 4 本の矢印なのはこのためである。また `eval_acm`（②の別モード）は BCM 状態を読む評価なので、`to_acm` 実行後に成り立つ。
+
 ### SDK コンテナ側のモデル状態（`munc._constants.MODELType`, `_session.py` の状態遷移）
 
-`munc` は `MODELType`（`_constants.py:327`）でモデルの状態を管理し、`_session.py` の `get_*_conversion_ops()` が状態を進める:
+`munc` は `MODELType`（`_constants.py:327`）でモデルの状態を管理し、`_session.py` の `get_*_conversion_ops()` が状態を進める（矢印ラベル＝状態を進める 4 ステップ。`train`/`eval_*` は各状態上で動く別動作なので矢印には現れない）:
 
 ```
-ORIGINAL ──to_structural──▶ (structural) ──to_training──▶ MYTHIC ──to_acm──▶ BCM ──create_artifact──▶ COMPILER
-OriginalModel               中間graph        MythicModel            BCMModel               CompilerModel
+              ┌── ① 再学習 ──────────────┐         ┌── ③ compiler ─────────────┐
+ORIGINAL ──to_structural──▶ (structural) ──to_training──▶ MYTHIC ──to_acm──▶ BCM ──create_artifact──▶ COMPILER ──compile──▶（Compiler コンテナへ）
+OriginalModel               中間graph                    MythicModel        BCMModel               CompilerModel
+                                                          │  ▲
+                                        ② eval_trained ───┘  │ train（重み学習, MYTHIC のまま）
+                                        （MYTHIC を TorchNet 化して評価）
 ```
 
 | モデル状態 / 中間表現 | 実体・クラス | 役割 | 使われるステップ |
