@@ -20,6 +20,32 @@ Mythic M2000 (Denali/ACE) AI アクセラレータ SDK の **精度シミュレ�
 - **Part A**: SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.0`）由来。核心コード（約 8,843 行、`munc` の主要サブパッケージ）はホスト `mythic_sdk/v26.05.0/_extracted_sdk/` に抽出済み。ただし `mythic-model-zoo/configs/*.yaml`（Hydra 設定）や `mythic-model-zoo/scripts/*.env` の一部、`mythic.acm.denali.*` 等の外部参照パッケージはホストに抽出されておらず、コンテナ内で内容を確認したのみで再確認できない。これらの箇所は本文中に「(コンテナ内確認, 再検証不可)」と注記する。
 - **Part B**: Compiler コンテナ（`compilerd-bin`）由来。ソースはホスト `mythic_sdk/v26.05.0/_extracted_compiler/` に抽出済み。
 
+## 0.1 精度シミュレーションの入力と出力（サマリ）
+
+「精度シミュレーション」とは、**学習済み Mythic モデル（ONNX）を、実データセット上で、アナログ非理想性込みの TorchNet で推論し、精度メトリクスを算出する**処理である。本ドキュメントで解析対象となる主要ステップ（`eval_onnx_step`/`eval_acm_step`/`mc_eval`）の入出力を以下に明文化する。すべて SDK コンテナ側（Part A）の話であり、Compiler コンテナ側（Part B）はこの内部で使われる部品にすぎない。
+
+### 入力
+
+| 入力 | 実体 | 供給元 / 根拠 |
+|---|---|---|
+| **① 対象モデル（ONNX）** | 学習済み Mythic Node モデル（`data/trained.onnx`）または ACM/BCM IR（`acm.onnx`）。ノードは `MythicConv2d`/`MythicLinear`（`eval_onnx`）あるいは `BCMConv2d`/`BCMLinear`（`eval_acm`）。 | `cfg.src`（`eval_onnx_step`/`eval_acm_step` の `src` 引数, `conversion_steps.py:433-455 / 372-401`）。前段ステップ `train`/`to_acm` の成果物。 |
+| **② 実データセット** | 推論に流す validation split の実画像・ラベル（ImageNet / COCO / nuScenes 等）。ランダムデータではない。 | `model_setup.dataset[dataset_val_key]`（`evaluate_onnx_model`, A.4）。データセットローダは Compiler コンテナ側 `vnnort/data/datasets/` にも実在（B.2）。 |
+| **③ アナログモデル / ノイズ設定** | TorchNet に注入するハードウェア忠実度の指定。`hw_model`（=m2000/denali）、`make_analog_model`、`noise_config`（全 nonideality enable）、`eval_acm` では `acm_model`（`munc_fp`/`munc_digital`/`munc_acm_signoff` 等）＋`acm_model_config`（`v0p4`/`v0p5` 等）。 | `cfg.torchnet.default_torchnet`（A.4）/ `cfg.acm_model`（A.5）。忠実度モデルは A.7、ノイズ数式は A.8。 |
+| **④ 評価器の指定** | 精度メトリクスを算出する完全修飾関数名（例: `mythic.model_zoo.huggingface_classifiers.conversion_steps.evaluate_onnx_model`）。 | `cfg.evaluator_config.evaluator`（`run_evaluator`, `conversion_steps.py:348-369`）。 |
+| **⑤（モンテカルロ時）サンプリング設定** | `num_samples` / `schedule`（チップ間×チップ内の階層サンプリング）、`nproc`、および統計処理用の `prop`（カバレッジ, 既定 0.9999）・`confidence`（信頼度, 既定 0.95）。 | `mc_eval_trained` step 設定（A.11）、`process_accuracy_data_step` の `cfg.prop`/`cfg.confidence`（`conversion_steps.py:575-606`）。 |
+
+### 出力
+
+| 出力 | 実体 | 生成元 / 根拠 |
+|---|---|---|
+| **単発評価のメトリクス JSON** | `cfg.metrics_file` が指す JSON ファイル。`{model_type: {metric_name: value, ...}}` という辞書に、評価器が返したメトリクス（分類=accuracy、検出=mAP、セグメンテーション=mIoU、BEVFormer=nuScenes mAP 等, B.7）を `model_type` をキーとして追記する（既存ファイルには上書きではなくマージ）。 | `eval_onnx_step`/`eval_acm_step` → `record_model_metrics(cfg, model_type, metrics)`（`munc_cli/helpers.py:250-265`, `load`→`data[key]=metrics`→`save`）。 |
+| **（モンテカルロ時）サンプル別 raw メトリクス** | `cfg.dest` ディレクトリ配下の `metrics_XXXX.json`（サンプル 1 つ = 1 ファイル、`XXXX` は 4 桁連番）。各サンプルは重みノイズ等を再ランダム化した 1 チップインスタンスの評価結果。 | `collect_accuracy_data_step`（`conversion_steps.py:525-548`）。dest は既存不可（混在防止）。 |
+| **（モンテカルロ時）統計サマリ** | サンプル群を集約した「片側許容区間の下限（保証精度）」＋各メトリクスの mean/std。`{metric: 下限値, "metric mean": …, "metric std": …}` を `metrics_file` に `model_type` キーで記録し、表形式でログ出力。 | `process_accuracy_data_step`（`conversion_steps.py:575-606`）→ `process_accuracy_data`（`monte_carlo.py:100-126`, `compute_lower_tolerance`, A.11.2）。 |
+| **標準出力ログ** | `summarize_metrics_step` が `metrics_file` を読み、`model_re`/`metric_re` でフィルタした表を logger に出力。 | `summarize_metrics_step`（`conversion_steps.py:88-107`）。 |
+| **（オプション）可視化・動画** | 推論結果を検出box・BEV 図として描画した MP4 / JPEG（BEVFormer のみ、A.13）。精度メトリクスとは別経路だが同じ `make_torch_net()` 推論を使う。 | `bevformer_inference.py`（A.13）。 |
+
+> **要点**: 精度シミュレーションは「モデル(ONNX) + 実データ + ノイズ設定」を入力に取り、「メトリクス JSON（＋モンテカルロ時は統計サマリ）」を出力する。**モデルの重み・構造は書き換えない**（`eval_onnx_step` は評価のみで、量子化・アナログ層注入は推論時 forward の中でのみ効く。artifact 生成等の変換は別ステップ A.12）。詳細な機構は以下 A.1 以降で解析する。
+
 ---
 
 # Part A: SDK コンテナ側 — 精度シミュレーション本体
