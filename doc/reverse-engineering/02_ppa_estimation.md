@@ -40,6 +40,10 @@ M2000 は「アナログ NPU(ACE アレイ、28nm)」+「デジタル NPU(オプ
 > まとめると、フローへの外部入力は「コンパイル成果物」1 つで、`funcsim` が `.h5` を生成 →
 > `perf_analysis.py` が `.h5` を、`power_estimator.py` が `final.l0.pb` を読む、という直列関係。
 
+### 起動経路（オーケストレーション層との関係）
+
+PPA 推定はユーザーが `mythic-ppa-estimators <コンパイル成果物>` という**独立 CLI** で起動する（`HOWTO_ppa_exploration_tools.md` §2、全体像は `00_overview.md` §2.5）。精度シミュレーション(`convert_model.py steps=eval_trained`)やコンパイル(`mythic-compiler`)とは別コマンドであり、`convert_model.py` の `step_order` にも含まれない。**コンパイルの下流**に位置し、入力はコンパイル成果物 tar（③ `mythic-compiler` の出力）である。本ドキュメントで解析する `perf_analysis.py` / `power_estimator.py` は、この `mythic-ppa-estimators` の内部実装であり、ユーザーが個別に叩くものではない。
+
 ---
 
 ## 2. 入力データ(HDF5 構造)

@@ -36,6 +36,15 @@ INITIALIZED (0) → OPTIMIZED (1) → QUANTIZED (3) → COMPILED (4)
 
 > 用語補足: SDK 内部では旧社名 **videantis** 由来の `vid*` プレフィックスと、`v-NN Mapper`(vnnmap) という呼称が一貫して使われる。ハードウェア (M2000) の物理仕様は `mythic.*` protobuf 側に定義される。
 
+### 起動経路（オーケストレーション層との関係）
+
+コンパイルをユーザーが起動する方法は **2 通り**あり、どちらも同一のコンパイル本体（`mythic.model_deployment.rmcr.compile:main()` → `compile_artifact()`）に収束する（全体像は `00_overview.md` §2.5）:
+
+1. **`mythic-compiler` を直接叩く**（GEN2 標準の推奨経路）: `mythic-compiler --input-artifact <artifact> --compiler-config <yaml> --output-artifact <out>.tar.gz`。`rmcr/compile.py` の `rewrite_argv` が `--input-artifact`→`src`, `--output-artifact`→`dest` にマップする（`compile.py:337-342`）。入力は完成済みの compiler-ready artifact。
+2. **`convert_model.py steps=compile` 経由**: この `compile` ステップの実体 `compile_munc_artifact`（`munc_cli/helpers.py:631-651`）が内部で `subprocess.run(["mythic-compiler", ...])` を呼ぶ薄いラッパ。前段の `to_acm`→`create_artifact` で artifact を生成してから通しで回せる点だけが違い、コンパイル結果は①と等価。
+
+本ドキュメントが解析するのは、このコンパイル本体（Compiler コンテナ `compilerd-bin` 側で走る `dnn_compiler`/`vnnmap`/`vnncodegen`）の内部処理である。以降 §2 でデータフローを示す。
+
 ---
 
 ## 2. データフロー図

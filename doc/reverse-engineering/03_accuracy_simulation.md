@@ -40,6 +40,8 @@ M2000 はフラッシュメモリセルをアナログ乗算器として使う�
 
 精度シミュレーションの入力は①再学習の成果物 `trained.onnx` であり、③compiler 側の `to_acm`/`acm.onnx` には依存しない。
 
+**起動経路の非対称性**: ②精度シミュレーションには専用 CLI が無く、**オーケストレーション層 `convert_model.py steps=eval_trained` からのみ実行できる**（③コンパイルは `mythic-compiler` を直接叩く経路もあるのと対照的）。各エントリーポイントとオーケストレーション層の対応の全体像は `00_overview.md` §2.5 を参照。
+
 ---
 
 ## 2. 入力と出力
@@ -81,23 +83,29 @@ M2000 はフラッシュメモリセルをアナログ乗算器として使う�
 ```mermaid
 flowchart TD
     subgraph OUTER["外側: オーケストレーション層 (§3.2) — 全ステップ共通"]
-        ENV[".env + steps=eval_trained<br/>(ユーザー起動)"] --> CM["convert_model.py (薄いラッパ)"]
+        ENV[".env + steps=...<br/>(ユーザー起動)"] --> CM["convert_model.py (薄いラッパ)"]
         CM --> RCS["run_conversion_steps(cfg)<br/>munc_cli/helpers.py"]
-        RCS -->|"step_order を steps でフィルタ<br/>= enabled_steps を順に実行"| PICK{"各 enabled step の<br/>step_type で分岐"}
+        RCS -->|"step_order を steps でフィルタ<br/>= enabled_steps を順に実行"| PICK{"step_type で<br/>どの関数を呼ぶか分岐<br/>(各ステップは独立に実行)"}
     end
 
-    PICK -->|"eval_trained → eval_onnx_step (§4.2)"| INNER
-    PICK -->|"eval_acm → eval_acm_step (§4.3)"| INNER
-    PICK -->|"mc_eval_trained → collect_accuracy_data_step (§4.5)"| INNER
+    PICK -->|"eval_trained → eval_onnx_step (§4.2)"| S1
+    PICK -->|"eval_acm → eval_acm_step (§4.3)"| S2
+    PICK -->|"mc_eval_trained → collect_accuracy_data_step (§4.5)"| S3
     PICK -.->|"to_acm / create_artifact / compile<br/>= ③compiler 側。精度シミュではない"| SKIP["(本ドキュメント対象外)"]
 
-    subgraph INNERBOX["内側: 1 つの eval ステップの中身 (§4)"]
+    S1["eval_trained: Session を 1 個構築 → 内側テンプレートを 1 回実行"] --> INNER
+    S2["eval_acm: Session を 1 個構築（+SwitchBCM で忠実度切替）→ 1 回実行"] --> INNER
+    S3["mc_eval_trained: サンプル毎に Session を作り直し<br/>内側テンプレートを N 回繰り返す (§7)"] --> INNER
+
+    subgraph INNERBOX["内側テンプレート: 1 つの Session の中身 (§4.1) — 上の各ステップが自前で回す"]
         INNER["Session を構築 (§4.1)<br/>SessionFromConfig(cfg)"] --> SESS["ONNX ロード<br/>(eval_acm は SwitchBCM で忠実度切替)"]
         SESS --> TN["make_torch_net() (§4.1)<br/>ONNX → 実行可能 PyTorch<br/>アナログモデル/ノイズを forward に注入"]
         TN --> EVAL["run_evaluator → HF Trainer.evaluate() (§4.2)<br/>実データで推論 + メトリクス集計"]
         EVAL --> OUT["record_model_metrics → metrics.json (§4.4)"]
     end
 ```
+
+> **図の読み方**: `eval_trained` / `eval_acm` / `mc_eval_trained` は**合流しない**。`steps=` で指定した**いずれか**が実行され、実行されたステップが**それぞれ独立に**内側テンプレート（Session 構築 → 推論 → メトリクス記録）を回す。`eval_trained`/`eval_acm` はテンプレートを 1 回、`mc_eval_trained` はサンプル毎に Session を作り直してテンプレートを N 回繰り返す点が異なる（§7）。下段の INNERBOX は「1 Session 分の共通処理」を 1 度だけ描いた代表図であり、複数ステップが 1 個の Session を共有するわけではない。
 
 以下、外側（§3.2）→ 内側（§4）の順に詳細を述べる。
 

@@ -91,8 +91,63 @@ SDK 内部では旧社名 **videantis** 由来の `vid*` プレフィックス�
 
 補足:
 - **PPA 推定はコンパイルの下流**（コンパイル成果物 `perf_trace_dump.h5` / vnn JSON を入力とする）であり、これは直列関係で正しい。
-- `mythic-model-zoo` 内では全ステップが 1 つのステップ列 `to_structural→to_training→train→eval_trained→…→to_acm→create_artifact→compile` に定義されているが、`eval_trained`（枝A）と `to_acm`/`create_artifact`（枝B）は**互いに依存せず、どちらも `train` の出力 `trained.onnx` を入力とする独立した枝**である（doc 03 Part A.3 / A.12 参照）。順番に並んでいるのは列挙上の都合で、データ依存ではない。
+- `mythic-model-zoo` 内では全ステップが 1 つのステップ列 `to_structural→to_training→train→eval_trained→…→to_acm→create_artifact→compile` に定義されているが、`eval_trained`（枝A）と `to_acm`/`create_artifact`（枝B）は**互いに依存せず、どちらも `train` の出力 `trained.onnx` を入力とする独立した枝**である（doc 03 §3.2 参照）。順番に並んでいるのは列挙上の都合で、データ依存ではない。
 - `eval_trained` は step_type=`eval_onnx`（精度シミュ内の1ステップ名）。
+
+このステップ列（`step_order`）を誰がどう起動するか、ユーザーが叩く CLI との関係は次の §2.5 で整理する。
+
+---
+
+## 2.5 オーケストレーション層とユーザー向けツールの関係
+
+§2 のステップ列は `convert_model.py`（正確には `munc.cli.helpers.run_conversion_steps`）という**オーケストレーション層**が回す。一方、GEN2 ユーザーが実際に叩く CLI コマンドは 3 つに分かれる。この節では「ステップ列」と「3 つの CLI」の対応、および各エントリーポイントがオーケストレーション層とどう関係するかを整理する。
+
+### ユーザーが叩く 3 つのエントリーポイント
+
+GEN2 ユーザーが直接実行する CLI は 3 つ（`doc/user-guides/GEN2 User Guide.pdf`, `HOWTO_ppa_exploration_tools.md` §1/§3）:
+
+| # | エントリーポイント（CLI） | 担当ステップ / 機能 | 入力 → 出力 | 実装本体 | doc |
+|---|---|---|---|---|---|
+| ① | 再学習（`convert_model.py steps=train` 等） | `to_structural`/`to_training`/`train` | データセット + FP32 ONNX → `trained.onnx` | `mythic-model-zoo/*/train.py`（未解析） | 04(未) |
+| ② | 精度シミュレーション（`convert_model.py steps=eval_trained`） | `eval_trained`（=`eval_onnx_step`） | `trained.onnx` + 実データ → `metrics.json` | `munc`（SDK コンテナ内で完結） | 03 |
+| ③ | コンパイル（`mythic-compiler`） | コンパイル本体 | compiler-ready artifact + `--compiler-config` → firmware artifact | `mythic.model_deployment.rmcr.compile:main()`（→ Compiler コンテナ起動） | 01 |
+| ④ | PPA 推定（`mythic-ppa-estimators`） | 性能・電力・面積推定 | コンパイル成果物 → latency/fps/power/area | `perf_analysis.py` / `power_estimator.py`（Compiler コンテナ側） | 02 |
+
+### オーケストレーション層（`convert_model.py`）との関係
+
+**重要な非対称性**: `convert_model.py`（= `run_conversion_steps`）は `step_order` の**任意のステップ**を `steps=...` で選んで実行できる汎用ドライバである。ただし各エントリーポイントとの関係は一様ではない:
+
+- **② 精度シミュレーションは `convert_model.py` からのみ実行できる**。`eval_trained`/`eval_acm`/`mc_eval_trained` は `conversion_steps.py` のステップとしてのみ存在し、専用 CLI は無い。実行は SDK コンテナ内で完結し、Compiler コンテナを呼ばない（doc 03 §1, §9）。
+- **③ コンパイルは 2 通りの起動経路がある**——どちらも最終的に**同一のコンパイル本体**（`rmcr/compile.py:main()` → `compile_artifact()`）に収束する:
+  1. **`mythic-compiler` を直接叩く**（GEN2 標準の推奨経路）。`--input-artifact`/`--compiler-config`/`--output-artifact` を取る（`rmcr/compile.py` の `rewrite_argv` が `--input-artifact`→`src`, `--output-artifact`→`dest` にマップ, `compile.py:337-342`）。
+  2. **`convert_model.py steps=compile` 経由**。この `compile` ステップの実体 `compile_munc_artifact`（`munc_cli/helpers.py:631-651`）は、内部で **`subprocess.run(["mythic-compiler", ...])`** を呼ぶ。つまり `convert_model.py` の compile ステップは `mythic-compiler` の**薄い呼び出しラッパ**であり、両者は等価な結果を出す。
+  - 違いは前段の扱いのみ: `mythic-compiler` は**完成済みの compiler-ready artifact** を入力に取る。`convert_model.py` 経由なら `to_acm`→`create_artifact` で **その artifact を生成してから** compile に渡せる（`steps=to_acm,create_artifact,compile`）。
+- **④ PPA 推定は `mythic-ppa-estimators` という独立 CLI**。`convert_model.py` の `step_order` には含まれず、コンパイル成果物を入力とする下流ツール（doc 02）。
+
+### 起動関係の図
+
+```
+                        ┌─────────────────────────────────────────────────────┐
+ユーザー CLI ①②        │ convert_model.py (= run_conversion_steps)             │
+  convert_model.py ────▶│   step_order から steps=... で選択して順に実行         │
+                        │   ├─ eval_trained/eval_acm/mc_eval  → ② 精度シミュ(SDK内完結) │
+                        │   ├─ to_acm / create_artifact       → artifact 生成    │
+                        │   └─ compile (=compile_munc_artifact)                 │
+                        └───────────────────────────┬─────────────────────────┘
+                                                    │ subprocess: mythic-compiler
+ユーザー CLI ③          ┌───────────────────────────▼─────────────────────────┐
+  mythic-compiler ─────▶│ rmcr/compile.py:main() → compile_artifact()          │
+                        │   → dnn_fw_compile → Compiler コンテナ(compilerd-bin) │
+                        │   出力: firmware artifact (tar.gz)                     │
+                        └───────────────────────────┬─────────────────────────┘
+                                                    │ コンパイル成果物
+ユーザー CLI ④          ┌───────────────────────────▼─────────────────────────┐
+  mythic-ppa-estimators▶│ perf_analysis.py / power_estimator.py (Compiler側)   │
+                        │   出力: latency / fps / power / area                  │
+                        └───────────────────────────────────────────────────────┘
+```
+
+> **要点**: 「オーケストレーション層」＝`convert_model.py`（`run_conversion_steps`）は ①②③ のステップを回せる汎用ドライバ。②は専ら `convert_model.py` から、③は `mythic-compiler` を直接／`convert_model.py steps=compile` 経由（内部で `mythic-compiler` を呼ぶ）の 2 通りで実行でき結果は等価、④は独立 CLI かつコンパイルの下流。
 
 ---
 
