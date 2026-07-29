@@ -24,11 +24,13 @@ Mythic M2000 (Denali/ACE) AI アクセラレータ SDK の **精度シミュレ�
 
 「精度シミュレーション」とは、**学習済み Mythic モデル（ONNX）を、実データセット上で、アナログ非理想性込みの TorchNet で推論し、精度メトリクスを算出する**処理である。本ドキュメントで解析対象となる主要ステップ（`eval_onnx_step`/`eval_acm_step`/`mc_eval`）の入出力を以下に明文化する。すべて SDK コンテナ側（Part A）の話であり、Compiler コンテナ側（Part B）はこの内部で使われる部品にすぎない。
 
+> **スコープ注記（4 エントリーポイントとの関係）**: 本 SDK のエントリーポイントは「①再学習 / ②accuracy simulation / ③compiler / ④PPA estimator」の 4 つ。accuracy simulation に該当するのは**推論+メトリクス算出**を行うステップ（`eval_trained`＝`eval_onnx_step`、`eval_acm_step`、`mc_eval_trained`）のみである。`step_order`（A.3）に並ぶ `to_acm`（`convert_training_to_acm_step`）・`create_artifact`・`compile` は accuracy simulation ではなく **③compiler 側フロー**（コンパイラ入力 artifact の生成、A.12）に属する。特に `to_acm` は学習済みモデルを BCM IR (`acm.onnx`) に変換する前段ステップであり、accuracy simulation の入力を供給するものではない。したがって accuracy simulation（`eval_trained`）の入力は `train`（①再学習）の成果物 `trained.onnx` である。
+
 ### 入力
 
 | 入力 | 実体 | 供給元 / 根拠 |
 |---|---|---|
-| **① 対象モデル（ONNX）** | 学習済み Mythic Node モデル（`data/trained.onnx`）または ACM/BCM IR（`acm.onnx`）。ノードは `MythicConv2d`/`MythicLinear`（`eval_onnx`）あるいは `BCMConv2d`/`BCMLinear`（`eval_acm`）。 | `cfg.src`（`eval_onnx_step`/`eval_acm_step` の `src` 引数, `conversion_steps.py:433-455 / 372-401`）。前段ステップ `train`/`to_acm` の成果物。 |
+| **① 対象モデル（ONNX）** | 学習済み Mythic Node モデル（`data/trained.onnx`、ノードは `MythicConv2d`/`MythicLinear`）。これが accuracy simulation の標準入力。 | `cfg.src`（`eval_onnx_step` の `src` 引数, `conversion_steps.py:433-455`）。前段ステップ **`train`（①再学習）の成果物 `trained.onnx`**。（変種 `eval_acm_step`（`conversion_steps.py:372-401`）は `to_acm` の出力 `acm.onnx`（`BCMConv2d`/`BCMLinear`）を入力に取るが、これは M2000 標準フローではなく generic フロー側の機能, A.5。） |
 | **② 実データセット** | 推論に流す validation split の実画像・ラベル（ImageNet / COCO / nuScenes 等）。ランダムデータではない。 | `model_setup.dataset[dataset_val_key]`（`evaluate_onnx_model`, A.4）。データセットローダは Compiler コンテナ側 `vnnort/data/datasets/` にも実在（B.2）。 |
 | **③ アナログモデル / ノイズ設定** | TorchNet に注入するハードウェア忠実度の指定。`hw_model`（=m2000/denali）、`make_analog_model`、`noise_config`（全 nonideality enable）、`eval_acm` では `acm_model`（`munc_fp`/`munc_digital`/`munc_acm_signoff` 等）＋`acm_model_config`（`v0p4`/`v0p5` 等）。 | `cfg.torchnet.default_torchnet`（A.4）/ `cfg.acm_model`（A.5）。忠実度モデルは A.7、ノイズ数式は A.8。 |
 | **④ 評価器の指定** | 精度メトリクスを算出する完全修飾関数名（例: `mythic.model_zoo.huggingface_classifiers.conversion_steps.evaluate_onnx_model`）。 | `cfg.evaluator_config.evaluator`（`run_evaluator`, `conversion_steps.py:348-369`）。 |
