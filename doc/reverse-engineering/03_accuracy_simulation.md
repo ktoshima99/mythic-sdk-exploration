@@ -149,6 +149,43 @@ to_structural → to_training → train │ eval_trained → summarize_metrics �
 >
 > **`to_acm` / `create_artifact` / `compile` は精度シミュレーションではない**（③compiler 側）。`step_order` に並んでいるのは列挙上の都合で、`eval_trained`（②）と `to_acm`（③）は互いに依存せず、どちらも `train` の出力 `trained.onnx` を独立に入力とする（`00_overview.md` §2）。上図で点線・「対象外」としているのはこのため。
 
+#### 3.2.1 eval 系ステップの命名は 3 層構造（ステップ名 / step_type / evaluator）
+
+`eval_trained` の実装を追うと `eval_onnx` や `eval_onnx_model` / `eval_mythic_model` といった別名が現れる。これらは同じものの別名ではなく、**3 つの異なる層の名前**である。混同を避けるため層を分けて整理する。
+
+```
+steps=eval_trained            ← ① ステップ名   (config トップレベルキー / steps= で選ぶ単位)
+  step_type: eval_onnx        ← ② step_type    (実装関数 eval_onnx_step への割り当て)
+  evaluator: eval_mythic_model ← ③ evaluator    (run_evaluator が動的解決して呼ぶ、精度を計算する関数)
+```
+
+**① ステップ名**（`step_order` / `steps=` で扱う単位）。精度評価に関わるステップは標準フローの `eval_trained` だけではなく、config には次が定義されている（BEVFormer config で確認）。`eval_trained` 以外は `step_order` に入っておらず、`steps=eval_fp32` のように明示指定して単発で走らせる検証用である。
+
+| ステップ名 | 入力モデル状態 | step_type | evaluator | 用途 |
+|---|---|---|---|---|
+| `eval_fp32` | FP32（ORIGINAL） | `eval_onnx` | `eval_onnx_model` | 変換前の浮動小数点基準値 |
+| `eval_structural` | structural | `eval_onnx` | `eval_onnx_model` | 構造整理後・標準 op のまま |
+| **`eval_trained`** | trained（MYTHIC） | `eval_onnx` | `eval_mythic_model` | 再学習済み Mythic モデル（ノイズ込み、標準フロー唯一の eval） |
+| `eval_fp` / `eval_digital` / `eval_signoff_v0p4` / `eval_signoff_v0p5` | acm（BCM） | `eval_acm` | （プロジェクト evaluator） | 6 階層忠実度モデルを切替えて評価（generic フロー, §4.3） |
+| `mc_eval_trained` | trained（MYTHIC） | `mc_eval_onnx` | `eval_mythic_model` | モンテカルロ多数回評価（§4.5, §7） |
+
+**② step_type**（`step_types/*.yaml` が実装関数に割り当てる）。ステップ名の `step_type:` フィールドで決まる。共通の実行ラッパである。
+
+| step_type | 実装関数（`common/conversion_steps.py`） | 役割 |
+|---|---|---|
+| `eval_onnx` | `eval_onnx_step` | Session を作り `run_evaluator` を呼ぶ汎用ラッパ |
+| `eval_acm` | `eval_acm_step` | `SwitchBCM` で忠実度切替後に `run_evaluator`（§4.3） |
+| `mc_eval_onnx` | `collect_accuracy_data_step` | モンテカルロで多数サンプル収集（§7） |
+
+**③ evaluator**（`evaluator_config.evaluator` に完全修飾名で指定）。`eval_onnx_step` は中で `run_evaluator` を呼び、この名前を `resolve_function` で動的解決して実行する。**実際に mAP/精度を計算する関数で、モデル種別（プロジェクト）ごとに定義が異なる**。BEVFormer では:
+
+| evaluator | 実体 | 実行経路 | 決定論性 |
+|---|---|---|---|
+| `eval_onnx_model` | `bevformer_onnx_eval`（`onnx_eval.py`） | onnxruntime, CPU | **決定論的**（ノイズなし） |
+| `eval_mythic_model` | `bevformer_torchnet_eval.evaluate` | TorchNet, GPU | **非決定論的**（ノイズ注入, §6） |
+
+同じ `step_type: eval_onnx`（＝同じ `eval_onnx_step`）でも、`evaluator_config` に何を割り当てるかで経路が分岐する。`eval_fp32` / `eval_structural` は標準 op を onnxruntime で回すため `eval_onnx_model`、`eval_trained` は TorchNet でノイズ込みに回すため `eval_mythic_model` を使う。したがって FP32 評価は単発で値が確定し、`eval_trained` は run ごとに変動する（実測は `PLAN_bevformer_ppa_exploration.md` §2.1）。
+
 内側（選ばれたステップ関数の中身）は §4 で詳述する。
 
 ---
@@ -181,7 +218,7 @@ with SessionFromConfig(cfg, allow_other_keys=True) as s:
 
 config 上、`eval_trained` は `step_type: eval_onnx` を指定し（名前と実装がずれている点に注意）、`torchnet: ${default_torchnet}` を与える。この `default_torchnet` が **`make_analog_model` と `noise_config`（全 nonideality enable）を TorchNet に渡す**ため、推論時にアナログノイズが乗る。
 
-`run_evaluator`（`conversion_steps.py:348-369`）が `evaluator_config.evaluator` の完全修飾名を解決して評価器関数を呼ぶ。resnet50 では `evaluate_onnx_model`。その内部処理:
+`run_evaluator`（`conversion_steps.py:348-369`）が `evaluator_config.evaluator` の完全修飾名を解決して評価器関数（③ evaluator, §3.2.1）を呼ぶ。**この evaluator はプロジェクトごとに異なる**: resnet50 では `evaluate_onnx_model`、BEVFormer では `eval_mythic_model`（TorchNet でノイズ込み評価）。以下は resnet50 の `evaluate_onnx_model` の内部処理:
 
 1. `session.make_torch_net()` で TorchNet 化（ここでアナログモデル/ノイズが効く）。
 2. `training_args.seed == "random"` なら乱数シードを都度変更（毎回異なるノイズ実現で評価）。
