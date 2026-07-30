@@ -261,7 +261,7 @@ OriginalModel               中間graph                    MythicModel        BC
 - デジタル専用 op（`MaxPool`/`Relu`/`Add` 等）は最初からデジタル側で、③の「振り分け」対象は主に `Conv`/`Gemm`/`MmaDot` 系（アナログにも載せうる演算）。
 - ②の SDK マーキングは③の**入力**になる。コンパイラは②のマーク（`__digital_onchip`・off-chip）を尊重した上で③を最適化する（doc 01 §3.3.3 に `CHECK FAILED: !hw::IsDenali(...depthwise_conv...)` の検証あり）。
 
-要するに、あなたの直感「structural で実行区分が決まる」は**①の層に限れば正しい**が、**アナログ/デジタルの本来の振り分けは③のコンパイラ（`auto_partition`）**が担い、SRAM 物理制約下で最終確定する。
+要するに「structural で実行区分が決まる」のは**①の層に限った話**であり、**アナログ/デジタルの本来の振り分けは③のコンパイラ（`auto_partition`）**が担い、SRAM 物理制約下で最終確定する。
 
 ### Compiler コンテナ側の中間表現（doc 01）
 
