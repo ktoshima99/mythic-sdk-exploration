@@ -237,13 +237,31 @@ OriginalModel               中間graph                    MythicModel        BC
 | モデル状態 / 中間表現 | 実体・クラス | 役割 | 使われるステップ |
 |---|---|---|---|
 | **ORIGINAL** (`OriginalModel`) | 素の FP32 ONNX | 学習/エクスポート直後の入力モデル | `to_onnx` の出力 |
-| **structural** | 中間 ONNX グラフ | on/off-chip マーキング・定数畳み込み等の構造整理済み | `to_structural` |
+| **structural** | 中間 ONNX グラフ | on/off-chip マーキング（＝実行区分の第 1 層。後述）・定数畳み込み等の構造整理済み | `to_structural` |
 | **MYTHIC** (`MythicModel`) | `MythicConv2d`/`MythicLinear` 等の Mythic ノード（`_constants.py:89-94`）を持つ ONNX | **アナログaware 再学習可能**な量子化グラフ（FSR 分解・DSF 学習可能化済み） | `to_training` の出力 → `train` の対象 |
 | **BCM** (`BCMModel`) | `BCMConv2d`/`BCMLinear`（`bcm_layers.py`）= **アナログ MAC(`mma_class`) + デジタルデータパス**（doc 03 A.6.1） | 学習済みモデルを**ハードウェア忠実に数値再現**する中間表現。別名 **ACM (Analog Compute Model)** | `to_acm` で生成 → `eval_acm`・`create_artifact` の入力 |
 | **COMPILER** (`CompilerModel`) | コンパイラ入力用に整えた ONNX（`compiler_ready_artifact.tar.gz`） | Compiler コンテナへ渡す最終成果物 | `create_artifact` の出力 |
 | **TorchNet** | `torch.nn.Module`（`munc._torchnet.TorchNet`, doc 03 A.13） | ONNX（Mythic/BCM ノード含む）を**実行可能な PyTorch モデル**に変換。`make_torch_net()` で構築 | `eval_trained`・推論動画生成の実行基盤 |
 
 > `RETRAIN`/`PTM` も `MODELType` に定義されているが本解析では未確認。
+
+### 実行区分（off-chip / アナログ / デジタル）はどこで決まるか — 3 層構造
+
+上表の **structural** 行にある「on/off-chip マーキング」は、**実行区分の決定の全体ではなく最初の 1 層**である。「どの演算をアナログコア（ACE/Denali）で、どれをデジタル（SALU）で、どれをホスト CPU で実行するか」は、SDK 側の静的マーキング（2 層）とコンパイラの最適化（1 層）に分かれて決まる。**「structural 時点で実行区分が全部決まる」わけでも「全部コンパイラが決める」わけでもない**:
+
+| 層 | 決めること | 誰が / いつ | 実装 | 根拠 |
+|---|---|---|---|---|
+| **① off-chip / on-chip** | NPU に**載らない**演算（チップ非対応 op・非対応属性）を **off-chip = ホスト CPU 実行**に回す | SDK・`to_structural` | `MarkUnsupportedOpsOffChip`（`_session.py:199`）→ `is_op_type_supported_on_chip()`（`_session_tools.py:404`） | artifact の `off_chip_0`/`off_chip_2` に対応 |
+| **② on-chip 内の一部を先にデジタル確定** | depthwise conv を **on-chip だがデジタル（SALU）**とマーク | SDK・ORIGINAL→MYTHIC 変換 | `MarkDepthwiseConvsAsDigital`（`_session.py:255`, `__digital_onchip` 属性付与） | 「depthwise は SALU で処理」 |
+| **③ on-chip の残りをアナログ/デジタルへ最終振り分け + SRAM 分割** | Conv/Gemm/MmaDot 等を **Denali(アナログ) / Digital IPU** のどちらに載せるか、SRAM 容量で**パーティション分割** | **コンパイラ**・`dnn_compiler` | `auto_partition.cpp`（`IsDenali()`/`IsDigital()`, doc 01 §3.3） | `off_chip_0→on_chip_1_bcm→off_chip_2` を生成 |
+
+**重要な誤解ポイント**: 「on-chip = アナログ」ではない。on-chip 対応ノード一覧（`SUPPORTED_ON_CHIP_NODES_BOREAS`, `_constants.py:245-272`）には、アナログ MAC 候補（`Conv`/`Gemm`/`BCMConv2d`/`BCMLinear`）と**デジタル演算（`Mul`/`Add`/`Sum`/`MaxPool`/`AveragePool`/`Relu`/`Concat`/`Slice`/`Resize` 等）が最初から混在**している。チップ上には ACE（アナログコア）と SALU/デジタルデータパスの両方があり、どちらも「on-chip」。
+
+- したがって①は「NPU に載るか否か」だけを分け、②③で on-chip 内をアナログ/デジタルに割り振る。
+- デジタル専用 op（`MaxPool`/`Relu`/`Add` 等）は最初からデジタル側で、③の「振り分け」対象は主に `Conv`/`Gemm`/`MmaDot` 系（アナログにも載せうる演算）。
+- ②の SDK マーキングは③の**入力**になる。コンパイラは②のマーク（`__digital_onchip`・off-chip）を尊重した上で③を最適化する（doc 01 §3.3.3 に `CHECK FAILED: !hw::IsDenali(...depthwise_conv...)` の検証あり）。
+
+要するに、あなたの直感「structural で実行区分が決まる」は**①の層に限れば正しい**が、**アナログ/デジタルの本来の振り分けは③のコンパイラ（`auto_partition`）**が担い、SRAM 物理制約下で最終確定する。
 
 ### Compiler コンテナ側の中間表現（doc 01）
 
