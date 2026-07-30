@@ -317,6 +317,22 @@ bcm_layers.BCMConv2d インスタンス（実 PyTorch nn.Module, §5.2）
 
 §5.4 の忠実度モデルのうち `munc_simple` / `munc_acm_signoff` 等が実際に注入する**確率的ノイズ**の数式。これが「実チップに載せたら精度がどう落ちるか」を決める本質部分である。ノイズは**推論のたびに乱数から再サンプル**される（`bcm_layers.py` の画像単位 `randomize()`、およびモンテカルロのサンプル単位, §7）。
 
+#### 学習側ノイズ（Mythic モデル）と評価側ノイズ（BCM）は別実装
+
+分析上の重要点として、`eval_trained` / `train` が使う **Mythic モデル**（`MythicConv2d` 内部の `analog_model`, §6.1）のノイズと、`eval_acm` が使う **BCM モデル**（`bcm_models/*`, §6.2〜6.3）のノイズは、**コード上まったく別の実装**である。相互 import は双方向とも存在しない（`munc/bcm/` は `_pytorch/noise.py` / `_ace_model.py` を import せず、逆も同様）。同じ物理現象（重みプログラミング誤差・温度・ADC 非理想性・量子化）を狙ってはいるが、忠実度と目的が異なる。
+
+| | Mythic モデル（§6.1） | BCM モデル（§6.2〜6.3） |
+|---|---|---|
+| 使うステップ | `eval_trained`, `train`, `mc_eval_trained` | `eval_acm`（generic フロー / signoff） |
+| 実装 | `_ace_model.py` + `_pytorch/noise.py` | `bcm_models/*.py`（fp/int8/digital/simple/tacm/acm_signoff） |
+| 重みノイズ | 加算+乗算ガウス（`WeightNoise`）, 温度（`TempShift`） | 電荷減衰・指数温度・比例誤差・**ポップコーン**・線形補正 / ACMS 統計 |
+| マルチサイクル | モデル化しない | **8bit SAR ビットシリアルを明示計算**（`munc_digital` 以上） |
+| ADC | 3 次歪み（`ADCNonLinearity`）+ 熱ノイズ（`ADCNoise`） | SAR 参照電圧・オフセット・INL・サイクル毎ノイズ |
+| 微分可能性 | **STE backward で微分可能（QAT 用）** | 前向き専用（numpy 経路含む）。学習向けは `munc_tacm` の mockup 系のみ |
+| 目的 | 再学習で誤差を織り込む**高速近似** | 評価・製品サインオフ用の**高忠実**モデル |
+
+橋渡しは `munc_tacm`（`trainingacm.py`）で、精度 3 軸（weights / multicycle / adc）を `IGNORE`/`MOCKUP`/`FULL(ACMS)` で切り替えることで `munc_fp`〜`munc_acm_signoff` を近似再現でき、`[mockup, mockup, mockup]` 選択時は「全劣化要因を mockup した学習用高速モデル（signoff 比 5〜10 倍高速）」になる（docstring に明記）。つまり Mythic 側は再学習で勾配を流すための微分可能な近似、BCM 側は評価用の高忠実モデル、という役割分担である。
+
 ### 6.1 `munc/_pytorch/noise.py`（ACE モデル / 学習用、autograd + STE）
 
 backward は勾配素通し（Straight-Through Estimator）。乱数は `torch.randn` / `torch.rand`。
@@ -415,6 +431,28 @@ compute_lower_tolerance(data, prop, confidence):
 ## 8. アナログ演算とデジタル演算の分割
 
 M2000 は全演算をアナログで実行できるわけではない。**アナログ MAC（ACE）で実行できる演算とできない演算**があり、精度シミュレーションはこの分割をノード属性のマーキングで扱う。ただし精度シミュレーション側の主眼は**アナログ非理想性の精密なモデル化**にあり、デジタル演算は粗い近似で済ませる、という非対称な役割分担になっている。
+
+### 8.0 Mythic モデル生成時の置換範囲（`to_training` = `ConvertNodesToMythic`）
+
+分析上よくある誤解として「Mythic モデル＝ ORIGINAL ONNX のアナログ実行部分だけをカスタム層に置き換えたもの」があるが、正確には次の 3 点で異なる。
+
+**(1) 起点は ORIGINAL ではなく structural**: `to_training` の入力は `to_structural` を通した後のグラフである。形状推論・定数畳み込み・on/off-chip マーキングが済んだ structural 状態を変換する。
+
+**(2) 置換対象はアナログ MAC 系だけではない**: `ConvertNodesToMythic.DEFAULT_MYTHIC_NODE_MAP`（`_o2t_ops/ops/convert_nodes_to_mythic.py`）が置換する op_type は以下で、アナログ MAC 候補（Conv/Gemm/MatMul）とデジタル量子化演算（Mul/Softmax）が混在する。
+
+| ONNX op | 置換先 Mythic 層 | 性格 |
+|---|---|---|
+| `Conv` | `MythicConv2d` | アナログ MAC 候補 |
+| `Gemm` | `MythicLinear` | アナログ MAC 候補 |
+| `MatMul` | `MythicMatMul` | アナログ MAC 候補 |
+| `Mul` | `MythicQuantizedMul` | デジタル量子化演算 |
+| `Softmax` | `MythicSoftmax` | デジタル量子化演算 |
+
+したがって「`MythicConv2d` になった層＝すべてアナログ」ではない。Conv/Gemm/MatMul のうち後段 `to_acm` で `__digital_onchip` が付いたものは `munc_int8`（デジタル）に落ち（§8.1）、Mul/Softmax は最初から量子化デジタル演算として扱われる。op-type レベルのアナログ/デジタル確定は structural〜to_acm を通じて段階的に決まる。
+
+**(3) off-chip ノードは置換されない**: `_get_info()` の `off_chip: OFFCHIP_IGNORE`（`_base_op.py:222`）により、off-chip とマークされたノードにはこの変換が適用されない。NPU に載らない演算は ORIGINAL の op_type のまま残る。
+
+要約すると、Mythic モデルは「structural 状態の ONNX のうち **on-chip の Conv/Gemm/MatMul/Mul/Softmax を Mythic カスタム層に置換**したもの」であり、置換された層のうち Conv/Gemm/MatMul が**アナログ MAC 候補**（再学習で 8bit 量子化・ノイズ aware にする対象）、Mul/Softmax や digital-onchip マーク付き層は**デジタル量子化演算**、off-chip ノードは元のままである。
 
 ### 8.1 分割のマーキング機構（3 種類の属性）
 
