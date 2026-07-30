@@ -141,9 +141,9 @@
 
 ## 2. 精度・レイテンシの現状(既知事実)
 
-`doc/reports/Model Summary Report.pdf`(v3.0)および`doc/reports/Compiler Optimization Report - BEVFormer-Tiny.pdf`(v1.2)により、BEVFormer-Tiny(6x1600x900, `num_aces=72`, m2072構成・380mm²ダイ、`high_optimization`コンパイラconfig)について以下が実測済み:
+`doc/reports/Model Summary Report.pdf`(v3.0)および`doc/reports/Compiler Optimization Report - BEVFormer-Tiny.pdf`(v1.2)により、BEVFormer-Tiny(6x1600x900, `num_aces=72`, m2072構成・380mm²ダイ、`high_optimization`コンパイラconfig)について以下が計測されている(**ドキュメント値**。Mythic 提供レポートの引用であり、本探索で再計測したものではない。データセットは nuScenes val 全体):
 
-**精度**(FP32 → ANA8 Retrained Model):
+**精度**(FP32 → ANA8 Retrained Model, ドキュメント値):
 
 | 指標 | FP32 | ANA8 Retrained | ANA8 Retrained 100PPM |
 |---|---|---|---|
@@ -151,6 +151,37 @@
 | NDS | 0.2649 | 0.2552 | 0.2529 |
 
 mAPはFP32とほぼ同一。NDSはretrainedで-3.7%、100PPMで-4.5%。
+
+#### 2.1 精度の自前実測(SDK コンテナ、nuScenes v1.0-mini val)
+
+[2026-07-30 実測] 上表のドキュメント値とは別に、`convert_model.py steps=eval_trained` / `steps=eval_fp32` を SDK コンテナ(`mythic_sdk_impl`, v26.05.2)で実行し、精度を自前計測した。**データセットは v1.0-mini val(2シーン・81フレーム)で、ドキュメント値の nuScenes val 全体とは規模が異なる。絶対値をドキュメント値と直接比較してはならない**(mini は小標本のため値が大きく異なる)。目的は「ANA8 Retrained(Mythic モデル)の精度シミュレーションが確率的に変動するか」の確認である。
+
+使用モデル: `models/training/bevformer/bevformer-tiny-{fp32,-1600x900-trained}.onnx`。`val_fraction=1.0`(全81フレーム固定)、seed 非固定。
+
+| モデル | 評価経路 | mAP | NDS | 実行回数 |
+|---|---|---|---|---|
+| FP32 | `eval_fp32` → `eval_onnx_model`(onnxruntime, CPU, 決定論的) | 0.1998 | 0.2029 | 1(単発で確定) |
+| ANA8 Retrained | `eval_trained` → `eval_mythic_model`(TorchNet, GPU, ノイズ注入) | 平均 **0.2162** | 平均 **0.2149** | 5 |
+
+ANA8 Retrained の 5 回実測(同一モデル・同一データ・同一設定):
+
+| run | mAP | NDS |
+|---|---|---|
+| 1 | 0.21451 | 0.21434 |
+| 2 | 0.21784 | 0.21745 |
+| 3 | 0.21596 | 0.21574 |
+| 4 | 0.21257 | 0.21007 |
+| 5 | 0.22017 | 0.21713 |
+| **統計** | mean 0.21621 / std 0.00263 / range **0.76pt** | mean 0.21495 / std 0.00268 / range **0.74pt** |
+
+**確認できた事実**:
+
+- **`eval_trained`(Mythic モデルの精度シミュレーション)は run ごとに結果が変動する**。入力(モデル・データ・`val_fraction`)を完全に固定しても、mAP/NDS が約 0.7pt の幅で揺れた。原因は Mythic モデルの `analog_model` が推論のたびにノイズを再サンプルする(seed 非固定・`torch.randn`)ためで、eval モードでもノイズは注入され続ける(`03_accuracy_simulation.md` §6、および §4.2 参照)。
+- **FP32(`eval_fp32`)は決定論的**で、単発で値が確定する(onnxruntime CPU 経路、ノイズなし)。
+- 変動幅は絶対値では小さい(std ≈ 0.0026、相対で約1.2%)。81フレーム全体の集計で画像単位のノイズが平均化されるため。それでもゼロではなく、**単発 `eval_trained` は点推定にすぎない**。製品保証精度を出すにはモンテカルロ(`mc_eval_trained`)+ 下側トレランス限界での統計処理が要る(`03_accuracy_simulation.md` §7)。
+- 注意: mini val 上では ANA8 実測 > FP32 実測 となっており、ドキュメント値(FP32 ≳ ANA8)と傾向が逆転している。これは (a) mini val の小標本性、(b) FP32 と Mythic で evaluator 経路が異なること(`eval_onnx_model` vs `eval_mythic_model`)による。**mini val の絶対値・大小関係は本探索の判断材料にはせず、あくまで「変動の有無」の確認に用いる**。
+
+本探索(`num_aces` を振る area-power トレードオフ)への含意は下記の通り変わらない: `num_aces` はハードウェアマッピングの設定で精度シミュレーション結果に影響しないため、この精度変動は探索の各点で再計測する必要がない(§3、下記の箇条書きも参照)。
 
 **レイテンシ・電力・面積**(6カメラ、Phase 2 で実測再現済み):
 
