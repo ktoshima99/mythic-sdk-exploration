@@ -237,7 +237,7 @@ OriginalModel               中間graph                    MythicModel        BC
 | モデル状態 / 中間表現 | 実体・クラス | 役割 | 使われるステップ |
 |---|---|---|---|
 | **ORIGINAL** (`OriginalModel`) | 素の FP32 ONNX | 学習/エクスポート直後の入力モデル | `to_onnx` の出力 |
-| **structural** | 中間 ONNX グラフ | on/off-chip マーキング（＝実行区分の第 1 層。後述）・定数畳み込み等の構造整理済み | `to_structural` |
+| **structural** | 中間 ONNX グラフ | on/off-chip マーキング（＝演算種別レベルの実行区分。後述レベル A）・定数畳み込み等の構造整理済み | `to_structural` |
 | **MYTHIC** (`MythicModel`) | `MythicConv2d`/`MythicLinear` 等の Mythic ノード（`_constants.py:89-94`）を持つ ONNX | **アナログaware 再学習可能**な量子化グラフ（FSR 分解・DSF 学習可能化済み） | `to_training` の出力 → `train` の対象 |
 | **BCM** (`BCMModel`) | `BCMConv2d`/`BCMLinear`（`bcm_layers.py`）= **アナログ MAC(`mma_class`) + デジタルデータパス**（doc 03 A.6.1） | 学習済みモデルを**ハードウェア忠実に数値再現**する中間表現。別名 **ACM (Analog Compute Model)** | `to_acm` で生成 → `eval_acm`・`create_artifact` の入力 |
 | **COMPILER** (`CompilerModel`) | コンパイラ入力用に整えた ONNX（`compiler_ready_artifact.tar.gz`） | Compiler コンテナへ渡す最終成果物 | `create_artifact` の出力 |
@@ -245,23 +245,36 @@ OriginalModel               中間graph                    MythicModel        BC
 
 > `RETRAIN`/`PTM` も `MODELType` に定義されているが本解析では未確認。
 
-### 実行区分（off-chip / アナログ / デジタル）はどこで決まるか — 3 層構造
+### 実行区分（off-chip / アナログ / デジタル）はどこで決まるか
 
-上表の **structural** 行にある「on/off-chip マーキング」は、**実行区分の決定の全体ではなく最初の 1 層**である。「どの演算をアナログコア（ACE/Denali）で、どれをデジタル（SALU）で、どれをホスト CPU で実行するか」は、SDK 側の静的マーキング（2 層）とコンパイラの最適化（1 層）に分かれて決まる。**「structural 時点で実行区分が全部決まる」わけでも「全部コンパイラが決める」わけでもない**:
+実行区分の決定は、**演算種別レベルの区分**（SDK 側・再学習の前提）と**物理配置レベルの分割**（コンパイラ側）の 2 つのレベルに分かれる。両者を混同しないことが重要である。
 
-| 層 | 決めること | 誰が / いつ | 実装 | 根拠 |
-|---|---|---|---|---|
-| **① off-chip / on-chip** | NPU に**載らない**演算（チップ非対応 op・非対応属性）を **off-chip = ホスト CPU 実行**に回す | SDK・`to_structural` | `MarkUnsupportedOpsOffChip`（`_session.py:199`）→ `is_op_type_supported_on_chip()`（`_session_tools.py:404`） | artifact の `off_chip_0`/`off_chip_2` に対応 |
-| **② on-chip 内の一部を先にデジタル確定** | depthwise conv を **on-chip だがデジタル（SALU）**とマーク | SDK・ORIGINAL→MYTHIC 変換 | `MarkDepthwiseConvsAsDigital`（`_session.py:255`, `__digital_onchip` 属性付与） | 「depthwise は SALU で処理」 |
-| **③ on-chip の残りをアナログ/デジタルへ最終振り分け + SRAM 分割** | Conv/Gemm/MmaDot 等を **Denali(アナログ) / Digital IPU** のどちらに載せるか、SRAM 容量で**パーティション分割** | **コンパイラ**・`dnn_compiler` | `auto_partition.cpp`（`IsDenali()`/`IsDigital()`, doc 01 §3.3） | `off_chip_0→on_chip_1_bcm→off_chip_2` を生成 |
+#### レベル A — 演算種別レベルの区分（SDK・`to_structural`/`to_training`。各ノードの属性として確定）
 
-**重要な誤解ポイント**: 「on-chip = アナログ」ではない。on-chip 対応ノード一覧（`SUPPORTED_ON_CHIP_NODES_BOREAS`, `_constants.py:245-272`）には、アナログ MAC 候補（`Conv`/`Gemm`/`BCMConv2d`/`BCMLinear`）と**デジタル演算（`Mul`/`Add`/`Sum`/`MaxPool`/`AveragePool`/`Relu`/`Concat`/`Slice`/`Resize` 等）が最初から混在**している。チップ上には ACE（アナログコア）と SALU/デジタルデータパスの両方があり、どちらも「on-chip」。
+「各演算をアナログ MAC / デジタル(SALU) / off-chip(ホスト CPU) のどれで実行するか」は、**再学習の前**（ORIGINAL→structural→MYTHIC 変換）で各ノードの属性として確定する。8bit 量子化とアナログノイズを注入する QAT（再学習）は「どのノードがアナログか」が確定していて初めて成立するので、**この区分は再学習の前提**である:
 
-- したがって①は「NPU に載るか否か」だけを分け、②③で on-chip 内をアナログ/デジタルに割り振る。
-- デジタル専用 op（`MaxPool`/`Relu`/`Add` 等）は最初からデジタル側で、③の「振り分け」対象は主に `Conv`/`Gemm`/`MmaDot` 系（アナログにも載せうる演算）。
-- ②の SDK マーキングは③の**入力**になる。コンパイラは②のマーク（`__digital_onchip`・off-chip）を尊重した上で③を最適化する（doc 01 §3.3.3 に `CHECK FAILED: !hw::IsDenali(...depthwise_conv...)` の検証あり）。
+| 区分 | 対象 | どう確定するか | 再学習での扱い |
+|---|---|---|---|
+| **off-chip（ホスト CPU）** | チップ非対応 op・非対応属性の演算 | `MarkUnsupportedOpsOffChip`（`_session.py:199`）→ `is_op_type_supported_on_chip()`（`_session_tools.py:404`）。off-chip 化 | Mythic 化されない（`ConvertNodesToMythic` は `OFFCHIP_IGNORE`＝off-chip ノードに適用しない, `_base_op.py:222`）。量子化・再学習の対象外 |
+| **on-chip・デジタル（SALU）** | depthwise conv | `MarkDepthwiseConvsAsDigital`（`_session.py:255`）で `__digital_onchip` 属性付与（`_constants.py:215`）。to_acm/SwitchBCM で `int8model`（INT8/SALU データパス）に固定（`convert_convs_to_bcm.py:58-63`, `switch_bcm.py:40-45`）| INT8 デジタルとして扱う（アナログノイズは乗らない）|
+| **on-chip・アナログ MAC** | 上記以外の Conv/Gemm/MatMul/Mul 等 | `ConvertNodesToMythic`（`_session.py`）で `MythicConv2d`/`MythicLinear` 等に変換 | **アナログaware 再学習の対象**。FSR 分解・DSF・8bit 量子化＋ノイズモデルを forward に注入 |
 
-要するに「structural で実行区分が決まる」のは**①の層に限った話**であり、**アナログ/デジタルの本来の振り分けは③のコンパイラ（`auto_partition`）**が担い、SRAM 物理制約下で最終確定する。
+**「on-chip = アナログ」ではない**: on-chip 対応ノード一覧（`SUPPORTED_ON_CHIP_NODES_BOREAS`, `_constants.py:245-272`）には、アナログ MAC 候補（`Conv`/`Gemm`/`BCMConv2d`/`BCMLinear`）と**デジタル演算（`Mul`/`Add`/`Sum`/`MaxPool`/`AveragePool`/`Relu`/`Concat`/`Slice`/`Resize` 等）が最初から混在**している。チップ上には ACE（アナログコア）と SALU/デジタルデータパスの両方があり、どちらも「on-chip」。デジタル専用 op（`MaxPool`/`Relu`/`Add` 等）は最初からデジタル側。
+
+#### レベル B — 物理配置レベルの分割（コンパイラ・`dnn_compiler`。再学習の後）
+
+コンパイラ（`auto_partition.cpp`）が決めるのは、**アナログ/デジタルの選択そのものではなく**、レベル A で確定した区分を**物理ハードウェアにどう配置するか**である:
+
+- on-chip アナログ演算を、どの **ACE タイル / IPU パーティション（Denali）** に載せるか
+- 物理 **SRAM 容量**に収まらなければパーティションを**分割**（`off_chip_0 → on_chip_1_bcm → off_chip_2` を生成）
+
+`IsDenali()`/`IsDigital()`（doc 01 §3.3）は、**レベル A の区分属性を尊重した上で**物理タイルへマッピングする（doc 01 §3.3.3 に、SDK が付けた depthwise マークを検証する `CHECK FAILED: !hw::IsDenali(...depthwise_conv...)` あり）。ゼロから「Conv をアナログにするかデジタルにするか」を決めているわけではない。
+
+#### 要点
+
+- **アナログ / デジタル / off-chip の演算種別レベルの区分は SDK（`to_structural`/`to_training`）で確定**し、これが**再学習の前提**になる（8bit 量子化・ノイズ注入の対象ノードが定まる）。
+- コンパイラが担うのは**物理配置とパーティション分割**（レベル B）であり、演算種別レベルのアナログ/デジタル選択を新たに決めるものではない。
+- したがって「structural 時点でアナログ/デジタルが決まっているのか」への答えは **Yes（演算種別レベルでは確定済み）**。コンパイラはその配置を最適化する。
 
 ### Compiler コンテナ側の中間表現（doc 01）
 
@@ -303,14 +316,14 @@ Compiler コンテナに `COMPILER` モデルが渡ると、さらに別系統�
 
 各ドキュメント本文でも詳述しているが、横断的に押さえるべき限界:
 
-1. **コンパイラの実マッピングは Python 外の C++ バイナリにある**
-   「アナログ/デジタル振り分け」「off_chip/on_chip 分割」「ACE タイル配置」の実装は Python ソースではなくコンパイル済みバイナリ `dnn_compiler`（23MB）/ `vnnmap`（3MB）内にある。`strings` 解析により振り分けの所在・単位・判定基準は判明している:
-   - 振り分け本体 = `dnn_compiler` の `mythic/optimizer/high/passes/auto_partition.cpp`
+1. **コンパイラの物理配置・マッピングは Python 外の C++ バイナリにある**
+   「物理 IPU 配置・パーティション分割」「off_chip/on_chip 分割」「ACE タイル配置」の実装は Python ソースではなくコンパイル済みバイナリ `dnn_compiler`（23MB）/ `vnnmap`（3MB）内にある。`strings` 解析により所在・単位・判定基準は判明している:
+   - 物理配置・分割の本体 = `dnn_compiler` の `mythic/optimizer/high/passes/auto_partition.cpp`
    - 単位 = **IPU パーティション**（`Denali`=アナログ IPU / `Digital`）。判定関数 `IsDenali()` / `IsDigital()`
-   - 基準 = ①演算のアナログ実行可否（Conv/Dense/MmaDot はアナログ、DepthwiseConv 等はデジタル）②物理 SRAM 容量（超過で分割）
+   - 基準 = ①演算のアナログ配置可否の検証（Conv/Dense/MmaDot はアナログ、DepthwiseConv 等はデジタル。**この区分自体は SDK で確定済み**、§3.5 レベル A）②物理 SRAM 容量（超過で分割）
    - 分割境界 = infeed/outfeed 接続 → artifact の `off_chip_0 → on_chip_1_bcm → off_chip_2`
 
-   未確定なのは分割点の探索アルゴリズムとコスト関数の内部実装のみ（C++ 逆アセンブルが必要）。詳細は [01_compilation.md](01_compilation.md) の 3.3 節。なお "BCM" という語は Compiler コンテナの Python ソース・バイナリ双方に存在しない（"BCM" は SDK コンテナ側 `munc` の Boreas Compute Model を指す。§3.5 参照。artifact ステージ名 `on_chip_1_bcm` の "bcm" の由来はこの Boreas Compute Model と考えられる[推測]）。
+   ここでコンパイラが行うのは**物理配置レベル（§3.5 レベル B）**であり、アナログ/デジタルの演算種別区分そのものは SDK 側で確定している。未確定なのは分割点の探索アルゴリズムとコスト関数の内部実装のみ（C++ 逆アセンブルが必要）。詳細は [01_compilation.md](01_compilation.md) の 3.3 節。なお "BCM" という語は Compiler コンテナの Python ソース・バイナリ双方に存在しない（"BCM" は SDK コンテナ側 `munc` の Boreas Compute Model を指す。§3.5 参照。artifact ステージ名 `on_chip_1_bcm` の "bcm" の由来はこの Boreas Compute Model と考えられる[推測]）。
 
 2. **PPA の電力モデルに未算入の項目**
    leakage / clock tree / PCIe / D2D / NOC 電力は定義済みだが `total` に未算入（コード上 "future versions" とコメント）。レイテンシは近似（作者コメントに "this probably isn't right" の注記あり）。

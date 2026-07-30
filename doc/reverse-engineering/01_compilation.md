@@ -55,7 +55,7 @@ flowchart TD
     B -->|optimize / optimization_pipeline| C[.vido.onnx<br/>OPTIMIZED<br/>opset20 + com.videantis オペ]
     C -->|quantize / VidQuantizer| D1[.vidq.onnx<br/>QDQ 挿入済み]
     C -->|quantize / VNNMapExporter| D2[.vidir<br/>CapnProto Network<br/>max_exponents 埋め込み]
-    D2 -->|dnn_compiler: auto_partition<br/>アナログ/デジタル振り分け| DP[IPU パーティション分割<br/>Denali=アナログ / Digital<br/>off_chip_0→on_chip_1→off_chip_2]
+    D2 -->|dnn_compiler: auto_partition<br/>SDK 確定区分を物理 IPU へ配置| DP[IPU パーティション分割<br/>Denali=アナログ / Digital<br/>off_chip_0→on_chip_1→off_chip_2]
     DP -->|vnnmap 実行 --codegen| E[.part.vidir.vci<br/>マッピング済み Network<br/>タイル分割/メモリ配置]
     E -->|vnncodegen| F[.vcnn<br/>コード生成]
     F -->|vnnrtgen --num-vmps| G[runtime バイナリ<br/>COMPILED]
@@ -362,9 +362,11 @@ bias 整合 (`layer_handlers.py:277-289`): bias 指数 `e_b[Cout]` と `M+1` を
 
 ---
 
-### 3.3 アナログ/デジタル振り分けとグラフ分割 (dnn_compiler)
+### 3.3 物理配置・グラフ分割 (dnn_compiler) とアナログ/デジタル区分の関係
 
-アナログ/デジタルの振り分けを行う本体は **`dnn_compiler` バイナリ** (`/mythic/dnn_compiler`, 約23MB ELF) であり、`strings` 解析によって**振り分けの所在・単位・判定基準が具体的に判明している**。振り分けは後述 3.4 の `vnnmap`(v-NN Mapper) ではなく、この `dnn_compiler` の役割である。
+**前提（役割分担）**: アナログ / デジタル(SALU) / off-chip という**演算種別レベルの実行区分は、SDK 側の `to_structural`/`to_training` で各ノードの属性として既に確定している**（`00_overview.md` §3.5 レベル A。depthwise→デジタル、非対応 op→off-chip、残りの Conv/Gemm→アナログ MAC。これが再学習の前提になる）。本節の `dnn_compiler` が担うのは、その確定済み区分を**物理ハードウェアにどう配置・分割するか**（レベル B）——どの ACE タイル / IPU パーティション(Denali)に載せ、SRAM 容量でどう分割するか——である。
+
+物理配置とグラフ分割を行う本体は **`dnn_compiler` バイナリ** (`/mythic/dnn_compiler`, 約23MB ELF) であり、`strings` 解析によって**分割の所在・単位・判定基準が具体的に判明している**。分割は後述 3.4 の `vnnmap`(v-NN Mapper) ではなく、この `dnn_compiler` の役割である。下記 3.3.3 の `IsDenali()`/`IsDigital()` 等は、コンパイラが**新たにアナログ/デジタルを選び直すのではなく、SDK が付けた区分を検証・尊重しつつ物理 IPU に割り当てる**ためのチェックである（例: depthwise が Denali に載っていないことの検証）。
 
 #### 3.3.1 振り分けの実装場所
 
@@ -390,9 +392,9 @@ mythic/hw/ipu.cpp
 
 #### 3.3.3 振り分けの判定基準
 
-strings から復元した、アナログ(Denali)かデジタルか、および分割数を決める基準:
+strings から復元した、物理 IPU への配置可否および分割数を決める基準（アナログ/デジタルの区分自体は SDK で確定済みで、ここではその区分と物理制約の整合をチェックする）:
 
-1. **演算種別による可否判定** — その演算がアナログコアで実行可能かをチェックし、不可ならデジタル/ホスト側へ落とす:
+1. **演算種別による配置可否の検証** — その演算がアナログコアに配置可能かをチェックし、不可（SDK でデジタル/off-chip 区分済みのもの）が Denali に載らないことを保証する:
    - `"! DepthwiseConv is not supported on Denali."` — DepthwiseConv はアナログ不可
    - `"! Only digital Convs are supported."` — 特定条件の Conv はデジタルのみ
    - `"CHECK FAILED: !hw::IsDenali(GetCrate(depthwise_conv).Ipu())"` — DepthwiseConv が Denali IPU に置かれていないことを保証
@@ -411,7 +413,7 @@ strings から復元した、アナログ(Denali)かデジタルか、および�
 
 #### 3.3.4 High IR が扱う演算ノード種別
 
-`dnn_compiler` の High IR ノード variant (strings のデマングルより) は以下を含む。これがアナログ/デジタル/フィードへ振り分けられる対象演算の全体像である:
+`dnn_compiler` の High IR ノード variant (strings のデマングルより) は以下を含む。これが IPU パーティション（アナログ Denali / デジタル / フィード）へ配置される対象演算の全体像である:
 
 ```
 Function, ElementWise, Upsample, Pad, Reshape, Rescale, AveragePool, MaxPool,
@@ -427,7 +429,7 @@ Dense, Conv, DepthwiseConv, MmaDot, GlobalAveragePool, Slice, Cat, Add, Infeed, 
 - `auto_sectioning_mgr` による section 数の上下限決定ロジック (`upper_bound_section_num_`)
 - 複数の分割解が存在する場合の選択優先順位
 
-> 要約: アナログ/デジタル振り分けは **`dnn_compiler` の `auto_partition` パスが、①演算種別のアナログ実行可否 (`IsDenali`/`IsDigital`)、②物理 SRAM 容量、を基準に IPU パーティションへ振り分ける**。未確定なのは探索アルゴリズムの内部実装のみ。
+> 要約: `dnn_compiler` の `auto_partition` パスは、**SDK 側 (`to_structural`/`to_training`) で確定済みのアナログ/デジタル/off-chip 区分を前提に**、①演算種別のアナログ配置可否 (`IsDenali`/`IsDigital` による検証)、②物理 SRAM 容量、を基準に **IPU パーティションへ物理配置・分割する**（アナログ/デジタルの区分自体を新たに決めるのではない。区分の決定元は `00_overview.md` §3.5 レベル A）。未確定なのは探索アルゴリズムの内部実装のみ。
 
 ---
 
