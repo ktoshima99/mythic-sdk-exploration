@@ -362,9 +362,9 @@ bcm_layers.BCMConv2d インスタンス（実 PyTorch nn.Module, §5.2）
 |---|---|---|
 | 使うステップ | `eval_trained`, `train`, `mc_eval_trained` | `eval_acm`（generic フロー / signoff） |
 | 実装 | `_ace_model.py` + `_pytorch/noise.py` | `bcm_models/*.py`（fp/int8/digital/simple/tacm/acm_signoff） |
-| 重みノイズ | 加算+乗算ガウス（`WeightNoise`）, 温度（`TempShift`） | 電荷減衰・指数温度・比例誤差・**ポップコーン**・線形補正 / ACMS 統計 |
+| 重みノイズ | 加算+乗算ガウス（`WeightNoise`）, 温度（`TempShift`, Boreas のみ） | 電荷減衰・指数温度・比例誤差・**ポップコーン**・線形補正 / ACMS 統計 |
 | マルチサイクル | モデル化しない | **8bit SAR ビットシリアルを明示計算**（`munc_digital` 以上） |
-| ADC | 3 次歪み（`ADCNonLinearity`）+ 熱ノイズ（`ADCNoise`） | SAR 参照電圧・オフセット・INL・サイクル毎ノイズ |
+| ADC | Boreas: 熱ノイズ（`ADCNoise`）+ 線形補正。Denali: 外部 `ApproximateADCModel`（オフセット・INL・CM2DM・入力ノイズ）（§6.1.1, §6.4） | SAR 参照電圧・オフセット・INL・サイクル毎ノイズ |
 | 微分可能性 | **STE backward で微分可能（QAT 用）** | 前向き専用（numpy 経路含む）。学習向けは `munc_tacm` の mockup 系のみ |
 | 目的 | 再学習で誤差を織り込む**高速近似** | 評価・製品サインオフ用の**高忠実**モデル |
 
@@ -373,6 +373,8 @@ bcm_layers.BCMConv2d インスタンス（実 PyTorch nn.Module, §5.2）
 ### 6.1 `munc/_pytorch/noise.py`（ACE モデル / 学習用、autograd + STE）
 
 backward は勾配素通し（Straight-Through Estimator）。乱数は `torch.randn` / `torch.rand`。
+
+`noise.py` は**数式のみを実装したライブラリで、σ 等のパラメータ値は一切保持しない**。全て呼び出し元から引数として渡される。パラメータの所在と、下記 (1)〜(4) がどのハードウェア世代で使われるかは §6.1.1 に整理する。
 
 **ノイズが注入されるのは forward のみで、backward では無視される**。4 つのノイズクラス（下記 (1)〜(4)）はいずれも `torch.autograd.Function` のサブクラスで、backward の実装は全て「入力勾配 = 出力勾配」を返すだけである（`noise.py:37, 108, 142, 179`）:
 
@@ -424,6 +426,82 @@ rand_sigma = noise_at_ifsr10 · 5.0 · 0.58     (0.58 ≈ Σ_{b=0}^{9}(1/2^b)²)
 X ← X + N(0, rand_sigma)
 ```
 
+#### 6.1.1 (1)〜(4) のパラメータ設定箇所と適用範囲（Boreas / Denali の分岐）
+
+パラメータは 3 階層で決まる。`noise.py` には数値がなく、上位のモデルクラスが `noise_config` から読んで引数に渡す。
+
+```
+① Hydra config group: munc/hydra_configs/noise_config/*.yaml        ← 数値の所在
+       ↓ instantiate → munc.hw_specs.BoreasNoiseConfig / DenaliNoiseConfig
+② 呼び出し元モデル: munc/_boreas_ace_model.py / munc/_denali_ace_separable_model.py
+       ↓ noise_config.<field> を引数として渡す
+③ munc/_pytorch/noise.py の (1)〜(4)                                 ← 数式のみ
+```
+
+**(1)〜(4) の呼び出し元は 4 箇所しかない。**(2)(4) は Boreas 専用、(3) は SDK 内に呼び出し元が存在しない:
+
+| 数式 | `noise.py` の公開名 | 呼び出し元 | 適用世代 |
+|---|---|---|---|
+| (1) WeightNoise | `weight_noise` (`noise.py:42`) | `_boreas_ace_model.py:47` | Boreas |
+| (1) WeightNoise | 同上 | `_denali_ace_separable_model.py:240` | Denali（両世代で共有される唯一の数式） |
+| (2) TempShift | `temp_shift` (`noise.py:202`) | `_boreas_ace_model.py:46` | Boreas のみ |
+| (3) ADCNonLinearity | `adc_nl` (`noise.py:204`) | **なし（未使用コード）** | — |
+| (4) ADCNoise | `adc_noise` (`noise.py:203`) | `_boreas_ace_model.py:98` | Boreas のみ |
+
+##### Boreas 経路 — `noise_config/*.yaml` にスカラー値が直書きされる
+
+`BoreasWeightModel.forward` / `BoreasADCModel.forward` が `self.noise_config` の各フィールドを読み、(1)(2)(4) に渡す。`noise_config` 系 yaml の主な値:
+
+| noise.py 側の引数 | `noise_config` フィールド | `boreas_noise_config`（ノイズ無） | `training_model` | `..._signoff_v0_5` |
+|---|---|---|---|---|
+| (1) `additive_noise` | `weight_noise_additive` | 0.0 | 0.0 | 1.85 |
+| (1) `mult_sigma` | `weight_noise_percentage` | 0.0 | 0.1 | 0.0 |
+| (2) `global_temp` | `temp_delta` | 0.0 | 30.0 | 20.0 |
+| (2) `local_temp_range` | `local_temp_delta` | 0.0 | 0.0 | 10.0 |
+| (4) `noise_at_ifsr10` | `ADC_noise_lsb_at_10ifsr` | 0 | 6.0 | 14.0 |
+
+`training_model_pfsr8_ifsr32_signoff_v0_4.yaml` の `weight_noise_percentage: 0.152` にはコメント `# ACM-S sigma_weight_prop * linear_beta1` があり、§6.3 の ACM signoff 実測値から導出されていることが明示されている。
+
+Boreas 経路にはノイズ以外の系統誤差補正もあり、`_linear_transform()`（`_boreas_ace_model.py:108`）が重み側に `weight_linear_slope`/`weight_linear_offset`、ADC 側に `adc_linear_slope`/`adc_linear_offset` を適用する（v0_4 系では `adc_linear_slope: 0.96`, `adc_linear_offset: -0.12`）。
+
+ノイズ強度は `self.noise_scale`（実装既定 1.0）で一括スケールされ、`noise_scale == 0` でノイズ経路全体がスキップされる（`_boreas_ace_model.py:43`）。
+
+##### Denali 経路（M2000 / BEVFormer が使う経路）— 値は Python 側の既定定数
+
+`denali_training_model.yaml` にスカラーが無いのは、Denali が `nonidealities` 辞書を**そのまま `randomize(**kwargs)` に転送する**設計だからである:
+
+```python
+# _denali_ace_separable_model.py:34
+def _randomize_hw_model(hw_model, nonidealities):
+    return hw_model.randomize(**omit(nonidealities, 'enable')) if nonidealities.get('enable') else hw_model
+```
+
+`denali_training_model.yaml` は `nonidealities.{weight_model,input_model,adc_model}.enable: True` のみを指定するため、**全パラメータが呼び出し先関数のデフォルト定数値で動作する**。yaml に書けば個別上書きできる（`denali_noise_config.yaml` のコメントに記述例あり）。
+
+(1) `weight_noise` に渡る値（`apply_programming_errors`, `_denali_ace_separable_model.py:225-247`）:
+
+| noise.py 側の引数 | 上書きキー | 既定定数 | 値 |
+|---|---|---|---|
+| `additive_noise` | `weight_additive_noise` | `WEIGHT_ADDITIVE_NOISE_SIGMA` (L25) | 1.92（= 1.5 nA）を `pFSR` で除算 |
+| `mult_sigma` | `weight_proportional_noise` | `WEIGHT_PROPORTIONAL_NOISE_SIGMA` (L27) | 0.0（Denali では比例ノイズ無効） |
+| `ste` | `weight_noise_back_prop` | — | 既定 False → `ste=True` |
+
+(2)〜(4) に相当する温度・ADC ノイズは、Denali では `noise.py` ではなく外部パッケージ `mythic.acm.denali.training` の別実装が担当する（§6.4）。
+
+##### Boreas / Denali の選択箇所は `noise_config` ではなく `training_model` config group
+
+実装クラスを決めるのは `munc/hydra_configs/training_model/*.yaml`:
+
+- `boreas.yaml` → `BoreasWeightModel` / `BoreasInputModel` / `BoreasADCModel`（(1)(2)(4) を使用）
+- `denali.yaml` → `DenaliWeightModel` / `DenaliInputModel` / `DenaliADCModel`（(1) のみ + Denali 実装）
+- `m2000.yaml` は `denali.yaml` のエイリアス。`denali_ref.yaml` / `denali_lut_sar.yaml` / `denali_with_ref_adc.yaml` は ADC モデルのみ差し替えた変種。
+
+いずれも `_target_: munc._ace_model.make_analog_model`（または `make_denali_separable_model`）の `_partial_` で、`make_weight_model` / `make_input_model` / `make_adc_model` を注入する構造になっている（`_ace_model.py:78-90`）。`MythicMMA.__init__`（`_o2t_ops/mythic_mma.py:51`）がこの partial を呼んで層ごとの `analog_model` を生成する。
+
+BEVFormer（`configs/bevformer/bevformer_tiny.yaml`）は `override training_model: denali` + `override noise_config: denali_training_model` なので **Denali 経路**であり、`noise.py` のうち有効なのは (1) のみである。
+
+なお `hw_specs.py:125` の `get_hw_config(node)` は `node.model.hwconfig or boreas_hw_config` を返すため、`hwconfig` 未設定の旧モデルは Boreas にフォールバックする。
+
 ### 6.2 `munc_simple`（`simplemodel.py`）— 最も物理的に詳細なモデル
 
 `mod_weights_torch()` がフラッシュ重みに**5 段のノイズを順に適用**:
@@ -453,8 +531,27 @@ X ← X + N(0, rand_sigma)
 
 ### 6.4 ノイズパラメータの管理
 
-- **`configure_nonidealities()`**（`DenaliSeparableModel`）: `input_model_nonidealities` / `weight_model_nonidealities` / `adc_model_nonidealities` の 3 辞書を各 `hw_model.randomize(**params)` に渡す。実パラメータ名は外部パッケージ（`mythic.acm.denali.*`, 抽出範囲外）側の定義で未確認[推測]。
-- **HW 仕様の設定クラス**（`hw_specs.py`）: `DenaliNoiseConfig` / `BoreasNoiseConfig`（`ADC_noise_lsb_at_10ifsr`, `weight_noise_percentage` 等）/ `NoiseConfigBase`（`temp_delta`, `half_pFSR_arr` 等）。
+- **HW 仕様の設定クラス**（`hw_specs.py`）: 3 段の継承構造になっている。
+  - `NoiseConfigBase`（L86）: `temp_delta`, `local_temp_delta`, `ds_trainable_range`, `half_pFSR_arr`, `half_iFSR_arr`
+  - `BoreasNoiseConfig`（L103）: 上記に加えて `ADC_noise_lsb_at_10ifsr`, `weight_noise_percentage`, `weight_noise_additive`, `weight_linear_slope`/`offset`, `adc_linear_slope`/`offset` — §6.1 の (1)(2)(4) に直接対応するスカラー群
+  - `DenaliNoiseConfig`（L117）: 上記に加えて `nonidealities: dict`, `model_common_mode: bool`, `flash_model_name: Optional[str]` — スカラーではなく**辞書経由**でパラメータを渡す
+- **`register_noise_models()`**（`hw_specs.py:298`）: `munc/hydra_configs/noise_config/` 配下の全 yaml を起動時に `compose` + `instantiate` し、モジュールグローバルとして登録する。`boreas_noise_config` などの名前でコードから直接参照できるのはこの仕組みによる。
+- **`configure_nonidealities()`**（`DenaliSeparableModel`, `_denali_ace_separable_model.py:434`）: `input_model_nonidealities` / `weight_model_nonidealities` / `adc_model_nonidealities` の 3 辞書を各サブモデルに配り、`_randomize_hw_model()` が `enable` キーを除いた残りを `hw_model.randomize(**params)` にそのまま展開する。したがって**上書き可能なキー名 = `randomize()` の引数名**であり、yaml が空なら関数側の既定値が使われる（§6.1.1）。
+- **Denali ノイズの実パラメータと既定値**（外部パッケージ `mythic/acm/denali/training/`、venv 内に実体あり）:
+
+| 対象モデル | `randomize()` 引数 | 既定定数 | 値 |
+|---|---|---|---|
+| `WeightModel` / `BiasModel` | `sub_threshold_slope_mismatch_sigma` | `SUB_THRESHOLD_SLOPE_MISMATCH_SIGMA` | 0.028 |
+| `WeightModel` / `BiasModel` | `uniform_prop_weight_quantization_noise` | `UNIFORM_PROP_WEIGHT_QUANTIZATION_NOISE` | 0.02 |
+| `InputModel`（AIDAC） | `vout_sigma` | `VOUT_SIGMA` | 5.0e-3 |
+| `ApproximateADCModel` | `adc_input_offset_sigma` | `ADC_INPUT_OFFSET_SIGMA` | 3.36e-9 |
+| `ApproximateADCModel` | `adc_non_linearity_sigma_lsb` | `ADC_NON_LINEARITY_SIGMA_LSB` | 0.72 |
+| `ApproximateADCModel` | `cm2dm_sigma` | `CM2DM_SIGMA` | 62.38e-6 |
+| `ApproximateADCModel` | `effective_input_noise_sigma` | `INPUT_NOISE_SIGMA` | 15e-9 |
+| `ApproximateADCModel` | `per_batch_adc_input_offset` | — | True |
+
+  （`polynomial_separable_model.py:18, 34, 88` / `approximate_adc_model.py:11, 12, 164, 168, 175`。`randomize()` に `None` を渡すとその項目はランダム化されない。）
+- Denali ADC の非線形性は §6.1 の (3) `ADCNonLinearity` とは別実装で、`adc_non_linearity_sigma_lsb` を他のノイズ項と**二乗和で合成**する（`approximate_adc_model.py:196`）。dataclass 既定値は 0.0 で、`randomize()` 経由でのみ 0.72 が入る。
 - **BCM 側 `mma_attr` 既定値**（`registry.py`, `SimpleAttributes`）: `simple_noise=68e-9`, `simple_offset=23e-9`, `simple_inl=-0.04`, `pop_lognorm_mean=-4.6`, `temp_delta=5` 等。
 
 ---
@@ -566,13 +663,13 @@ M2000 は全演算をアナログで実行できるわけではない。**アナ
 | ONNX→TorchNet 変換・分割マーキング | `_torchnet.py`, `munc_ops/{convert_convs_to_bcm,convert_nodes_to_mythic,switch_bcm,mark_depthwise_convs_as_digital,mark_unsupported_ops_off_chip,mythic_conv,mythic_softmax}.py` |
 | 可視化・動画（§4.6） | `bevformer_inference.py`, `bevformer_inference_support/` |
 
-> `mythic-model-zoo/configs/*.yaml`（Hydra 設定）・`scripts/*.env`・`mythic.acm.denali.*` は解析用コンテナ内で `docker exec` により確認したのみで、ホストには未抽出（「コンテナ内確認, 再検証不可」と本文で注記）。
+> `mythic-model-zoo/configs/*.yaml`（Hydra 設定）・`munc/hydra_configs/{noise_config,training_model}/*.yaml`・`scripts/*.env`・`mythic.acm.denali.training.*` は解析用コンテナ内で `docker exec` により確認したのみで、ホストには未抽出（「コンテナ内確認, 再検証不可」と本文で注記）。§6.1.1 / §6.4 のパラメータ値はこの経路で取得している。
 
 **「精度シミュレーションが SDK コンテナ内で完結する」ことの確認**: `grep -rln vnnort _extracted_sdk/` は空（`munc` は `vnnort` を import しない）。`eval` 経路の唯一の subprocess は Monte Carlo の GPU シャーディング（自分自身の再 spawn, `conversion_steps.py:505`）で、Compiler コンテナ起動ではない。
 
 ### 未解明点
 
-1. `hw_model.randomize(**nonidealities)` の実パラメータ名（外部パッケージ `mythic.acm.denali.*` 側で定義、抽出範囲外）。
+1. ~~`hw_model.randomize(**nonidealities)` の実パラメータ名~~ → **解決**（§6.4）。`mythic/acm/denali/training/{polynomial_separable_model,approximate_adc_model}.py` は venv 内に実体があり、引数名と既定定数値を確認した。ホストへの抽出は未実施（コンテナ内確認）。
 2. Hydra config の既定スケジュール `repeat` 値、`eval_config.training_args` の具体値（batch size 等）。
 3. `munc_acm_signoff` v0.4/v0.5/v0.8 の物理的差異の背景（較正世代の違いか等）。
 4. `train_huggingface` の QAT/蒸留詳細（`huggingface_classifiers/train.py`, 未読）。
