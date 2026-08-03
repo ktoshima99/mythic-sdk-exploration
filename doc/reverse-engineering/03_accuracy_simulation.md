@@ -404,27 +404,78 @@ backward:  grad ─────────────────── その
 
 なお `weight_noise()` ラッパ（`noise.py:42-55`）には `ste` フラグがあり、既定 `ste=True` は `WeightNoise.apply(...)` で autograd グラフに載せる。`ste=False` は `WeightNoise.forward(None, ...)` を直接呼ぶため autograd グラフに載らず、勾配計算から完全に外れる（純粋な推論用）。
 
-**(1) WeightNoise**（重みプログラミング誤差）— 加算 + 乗算ガウスノイズ:
+以下の (1)〜(4) で共通する前提:
+
+- **`weight` の単位は「整数重みコード」**で、範囲 `[-128, 127]`（`hw_config.weight_min`/`weight_max`）。**pFSR 倍する前の値**であり、物理電流への換算は `flash_w = 200e-9 · w / 128 · pFSR / 2`（`noise.py:71`）。したがって σ_add 等の単位も**この重みコードの LSB** である。
+- **`X` / `z` の単位は「ドット積コード」**。ADC ノイズが乗る時点で `_scale_to_adc_output_range()`（`_ace_model.py:120`）により `z ← (pFSR/iFSR) · max_abs_dot_product_value · z` とスケール済みで、単位は ADC 出力 LSB。
+- **`pFSR`（programming Full Scale Range）**は重み側フルスケール、**`iFSR`（integration FSR）**は積分（ドット積）側フルスケール。SDK では `half_pFSR_arr` / `half_iFSR_arr`（半値配列）で候補が与えられ、層ごとに選択される。
+- 乱数の粒度は関数で決まる: `normal_like()` は**テンソルと同形**（＝重み/活性化の**要素ごとに独立**）、`normal()` / `uniform()` は**サイズ (1,) のスカラー**（＝そのカーネル全体で共通の 1 値）。
+
+**(1) WeightNoise**（重みプログラミング誤差, "monte carlo" ノイズ）— フラッシュセルへの書き込み精度の限界を表す:
 ```
 weight ← weight + N(0, σ_add) + weight · N(0, σ_mult)
+                  ~~~~~~~~~~~   ~~~~~~~~~~~~~~~~~~~~
+                  加算ノイズ      乗算（比例）ノイズ
 ```
 
-**(2) TempShift**（温度シフト）— ローカル温度をグローバル温度周りの一様分布からサンプルし重みに反映:
+| 記号 | 引数名 | 意味 | 単位 | 供給元 |
+|---|---|---|---|---|
+| σ_add | `additive_noise` | **重み値に依存しない**書き込み誤差の標準偏差。セルのフロアノイズ・読み出し回路オフセットに相当 | 重みコード LSB | Boreas: `weight_noise_additive` / Denali: `WEIGHT_ADDITIVE_NOISE_SIGMA/pFSR` |
+| σ_mult | `mult_sigma` | **重み値に比例する**書き込み誤差の相対標準偏差（比率。0.1 = 10%）。docstring では "percentage noise" | 無次元（比率） | Boreas: `weight_noise_percentage` / Denali: `WEIGHT_PROPORTIONAL_NOISE_SIGMA`（=0.0） |
+
+両ノイズは**重み要素ごとに独立サンプル**（`normal_like`）。物理的に、加算項は「小さい重みでも一定量ずれる」誤差、乗算項は「大きい重みほど大きくずれる」誤差を表す。Denali の既定値 1.92 は 1.5 nA に対応する（`weight_additive_noise` のコメント; `1.92 · 200e-9/128 · 0.5 = 1.5e-9`）。
+
+`_boreas_ace_model.py:64` および Denali の `apply_programming_errors(adjust_for_bias_split=True)` では、bias 行が分割されない都合上、bias に対しては σ_add を `√bias_rows` 倍、σ_mult を `√bias_rows` で除して渡す（複数行に分散した誤差の合成を近似）。
+
+ノイズ適用後に `torch.where(weight != 0, noisy_weight, weight)` が入るため、**ゼロ重みにはノイズが乗らない**（プログラムされていないセルは誤差を持たない）。
+
+**(2) TempShift**（温度シフト）— フラッシュセルの閾値電圧が温度で変わる効果:
 ```
-temp_delta ~ U(global_temp − local_temp_range, global_temp + local_temp_range)
-weight ← weight + weight · temp_delta · 0.005   （簡略版。理論式はコメントに別途）
+temp_delta ~ U(global_temp − local_temp_range, global_temp + local_temp_range)   ← カーネル全体で 1 スカラー
+weight ← weight + weight · temp_delta · 0.005
 ```
 
-**(3) ADCNonLinearity**（ADC 3 次歪み）:
+| 記号 | 引数名 | 意味 | 単位 | 供給元 |
+|---|---|---|---|---|
+| `global_temp` | `global_temp` | チップ全体の基準温度シフト量（キャリブレーション温度からのずれ）。計算グラフの一部として上位から渡される | °C | `noise_config.temp_delta`（`training_model` では 30.0） |
+| `local_temp_range` | `local_temp_range` | 個々のカーネル（タイル）が `global_temp` から最大どれだけずれるかの幅。**0 ならチップ全体が一様温度** | °C | `noise_config.local_temp_delta` |
+| `temp_delta` | （内部変数） | 上記から一様分布でサンプルされた実効温度シフト。**カーネル単位で 1 値**（`uniform()` がサイズ (1,)）で、そのカーネルの全重みに同じ値が掛かる | °C | — |
+| `0.005` | （ハードコード） | 温度感度係数 [1/°C]。**ハードウェア実測ではない暫定値** | 1/°C | — |
+
+`0.005` については実装コメントに明示的な注意がある（`noise.py:100-104`）:「この項は hw を表現したものではない。旧 retraining モデルと一致させるために入れている。精度は良くなるが正しくはない。実装の理解が進むまでの暫定対処」。物理由来の理論式は同ファイル L70-72 に導出が残っており、コメントアウトされた `systematic_temp_shift = weight · temp_delta · 2.0928e-2 · exp(−0.00876 · pFSR/2 · |weight|)`（重みが大きいほど感度が下がる指数減衰形）が本来の形である。**現行実装は重み依存性のない線形近似**。
+
+**(3) ADCNonLinearity**（ADC 3 次歪み）— SDK 内に呼び出し元がない（§6.1.1）が、パラメータの意味は次の通り:
 ```
-X ← X + η·X³,   η ~ Normal(nl_shift_coeff, nl_noise_coeff)
+nl_shift_coeff = nl_shift_perc / (255 · 10)²      ← 正規化: フルスケール入力で歪み量が nl_shift_perc になる
+nl_noise_coeff = nl_noise_perc / (255 · 10)²
+η ~ Normal(nl_shift_coeff, nl_noise_coeff)        ← カーネル全体で 1 スカラー
+X ← X + η · X³
 ```
 
-**(4) ADCNoise**（ADC 熱ノイズ）— 8 回のマルチサイクル ADC 実行を二乗和近似:
+| 記号 | 引数名 | 意味 | 単位 |
+|---|---|---|---|
+| `nl_shift_perc` | `nl_shift_perc` | 3 次歪みの**系統的（決定論的）成分**。全チップに共通して現れる平均的な非線形性の大きさ | フルスケールに対する比率 |
+| `nl_noise_perc` | `nl_noise_perc` | 3 次歪み係数の**チップ間ばらつき**（`nl_shift_perc` を平均とする正規分布の σ） | 同上 |
+| `η` | （内部変数） | サンプルされた 3 次係数。カーネル単位で 1 値 | 1/コード² |
+| `255 · 10` | `maximum_9bit · ifsr_reference` | 正規化の基準となるフルスケール出力コード（9bit 最大値 255 × 基準 iFSR=10） | コード |
+
+`(255·10)²` で割る意味は、`X = 2550`（フルスケール）のとき `η·X³ = nl_shift_perc · X` となるよう正規化することであり、`nl_*_perc` は「フルスケール入力での歪み量が入力の何倍か」を表す。3 次形（`X³`）なのは、差動 ADC が偶数次歪みを打ち消し 3 次が支配的に残るという一般的性質による。
+
+**(4) ADCNoise**（ADC 熱ノイズ）— マルチサイクル（ビットシリアル）8 回実行分を二乗和で合成:
 ```
-rand_sigma = noise_at_ifsr10 · 5.0 · 0.58     (0.58 ≈ Σ_{b=0}^{9}(1/2^b)²)
-X ← X + N(0, rand_sigma)
+rand_sigma = noise_at_ifsr10 · 5.0 · 0.58
+X ← X + N(0, rand_sigma)                    ← 活性化の要素ごとに独立サンプル
 ```
+
+| 記号 | 引数名 | 意味 | 単位 |
+|---|---|---|---|
+| `noise_at_ifsr10` | `noise_at_ifsr10` (docstring 上は `nlsb`) | **基準 iFSR=10 における ADC 熱ノイズを LSB 単位で表した値**。ハードウェア較正値（docstring: 「3 LSB at iFSR=10 で較正済み」） | LSB @ iFSR=10 |
+| `5.0` | （ハードコード） | 基準 iFSR=10 の**半値** `10/2`。σ を half_iFSR 基準の単位系に換算する係数 | — |
+| `0.58` | （ハードコード） | マルチサイクル合成係数。ビット b の寄与が `σ/2^b` で、`Σ_{b=1}^{9}(1/2^b)² ≈ 0.333` … 詳細は下記 | — |
+
+`0.58` の由来: docstring の導出（`noise.py:157-159`）は `err² = Σ_b (σ/2^b)² = σ²·0.58` と書いているが、`Σ_{b=0}^{9}(1/2^b)² = 1.333`、`Σ_{b=1}^{9}(1/2^b)² = 0.333` であり、いずれも 0.58 にはならない。0.58 ≈ `√0.333` = 0.577 に一致するため、**docstring の `err²` は実際には σ の係数（標準偏差ベース）を意味しており、実装 `rand_sigma = ... · 0.58` は σ に掛けているので整合する**（`err² = σ²·0.58` を字面どおり取ると σ に `√0.58` を掛けるべきことになり、その場合は不整合になる）。ビット 0（MSB, b=0 の項）が含まれない `Σ_{b=1}^{9}` 側と一致することから、8bit マルチサイクルで実際に加算される ADC サンプルの重み付けを反映していると解釈できる[推測]。
+
+呼び出し側（`_boreas_ace_model.py:98`）は `noise.adc_noise(z, ADC_noise_lsb_at_10ifsr / (iFSR / 2))` として渡す。すなわち**実際に使われている層の iFSR で割ることで、基準 iFSR=10 の較正値を当該層のスケールに換算**している（iFSR が大きい＝レンジが広い層では、同じ絶対ノイズがコード上は小さく見える）。
 
 #### 6.1.1 (1)〜(4) のパラメータ設定箇所と適用範囲（Boreas / Denali の分岐）
 
