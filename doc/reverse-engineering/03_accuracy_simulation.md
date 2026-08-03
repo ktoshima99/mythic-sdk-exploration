@@ -374,6 +374,34 @@ bcm_layers.BCMConv2d インスタンス（実 PyTorch nn.Module, §5.2）
 
 backward は勾配素通し（Straight-Through Estimator）。乱数は `torch.randn` / `torch.rand`。
 
+**ノイズが注入されるのは forward のみで、backward では無視される**。4 つのノイズクラス（下記 (1)〜(4)）はいずれも `torch.autograd.Function` のサブクラスで、backward の実装は全て「入力勾配 = 出力勾配」を返すだけである（`noise.py:37, 108, 142, 179`）:
+
+```python
+def backward(ctx, grad_output):
+    return grad_output, None, None   # 入力勾配は素通し。ノイズパラメータ側は None（勾配を計算しない）
+```
+
+`grad_output` を無変更で返すのは**恒等関数として微分する**ことを意味し（STE）、ノイズ由来の勾配項は存在しない。ノイズパラメータ（`additive_noise`, `mult_sigma`, `global_temp` 等）に `None` を返すのは、ノイズが学習対象パラメータではなく外部から与えられる確率的外乱として扱われるためである。
+
+したがって `train` ステップでの動作は次の非対称な構造になる:
+
+```
+forward :  weight → weight + N(0,σ_add) + weight·N(0,σ_mult) → 量子化 → MAC → ADCノイズ   （ノイズあり）
+backward:  grad ─────────────────── そのまま素通し ───────────────────→ grad              （ノイズなし）
+```
+
+- **forward にノイズが必要な理由**: 損失値がノイズ込みの出力から計算されるため、「ノイズがあっても損失が小さくなる重み」へ最適化が向かう。**ノイズ耐性が学習される経路は forward（損失値）を通じてのみ**であり、backward にノイズを入れる必要はない。
+- **backward でノイズを無視する理由**: ノイズおよび量子化の round/clip は微分が 0 かほぼ定義できない。真の勾配を使うと学習が進まないため、恒等近似（STE）で勾配を通す。これは QAT（Quantization-Aware Training）の標準手法である。
+
+`train` と `eval_trained` の差は「ノイズの有無」ではなく「backward を走らせて重みを更新するか」だけである。ノイズは `self.training` で gate されていないため、eval 時も forward には同じようにノイズが乗る（これが `eval_trained` の結果が run ごとに変動する理由。§4.2、実測は `PLAN_bevformer_ppa_exploration.md` §2.1）。
+
+| | forward のノイズ | backward |
+|---|---|---|
+| `train` | あり | STE で勾配素通し（ノイズ由来の勾配項なし） |
+| `eval_trained` | あり（`train` と同じ） | 走らない（推論のみ） |
+
+なお `weight_noise()` ラッパ（`noise.py:42-55`）には `ste` フラグがあり、既定 `ste=True` は `WeightNoise.apply(...)` で autograd グラフに載せる。`ste=False` は `WeightNoise.forward(None, ...)` を直接呼ぶため autograd グラフに載らず、勾配計算から完全に外れる（純粋な推論用）。
+
 **(1) WeightNoise**（重みプログラミング誤差）— 加算 + 乗算ガウスノイズ:
 ```
 weight ← weight + N(0, σ_add) + weight · N(0, σ_mult)
