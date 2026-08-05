@@ -58,7 +58,7 @@ M2000 はフラッシュメモリセルをアナログ乗算器として使う�
 
 | 入力 | 実体 | 供給元 / 根拠 |
 |---|---|---|
-| **① 対象モデル（ONNX）** | 学習済み Mythic Node モデル `data/trained.onnx`。ノードは `MythicConv2d` / `MythicLinear`。 | `cfg.src`（`eval_onnx_step`, `conversion_steps.py:433-455`）。前段ステップ **`train`（①再学習）の成果物**。 |
+| **① 対象モデル（ONNX）** | 学習済み Mythic Node モデル `data/trained.onnx`。ノードは `MythicConv2d` / `MythicLinear`。 | `cfg.src`（`eval_onnx_step`, `conversion_steps.py:433-455`）。前段ステップ **`train`（①再学習）の成果物**。ただし「学習済み」は標準フローでの想定であり実装上の制約ではない（未学習 Mythic モデルも評価可能。§4.7）。 |
 | **② 実データセット** | validation split の実画像・ラベル（ImageNet / COCO / nuScenes 等）。ランダムデータではない。 | `model_setup.dataset[dataset_val_key]`（`evaluate_onnx_model`, §4.2）。 |
 | **③ ノイズ / アナログモデル設定** | TorchNet に注入するハードウェア忠実度の指定。`hw_model`（=m2000/denali）・`make_analog_model`・`noise_config`（全 nonideality を有効化）。 | `cfg.torchnet.default_torchnet`（§4.2）。忠実度モデルは §5.2、ノイズ数式は §6。 |
 | **④ 評価器の指定** | 精度メトリクスを算出する関数の完全修飾名（例: `mythic.model_zoo.huggingface_classifiers.conversion_steps.evaluate_onnx_model`）。 | `cfg.evaluator_config.evaluator`（`run_evaluator`, `conversion_steps.py:348-369`）。 |
@@ -192,7 +192,7 @@ steps=eval_trained            ← ① ステップ名   (config トップレベ�
 
 ## 4. 処理フローの各ステップ詳細
 
-本章は §3 の図の**内側ボックス（1 つの eval ステップの中身）**を詳述する。§4.1 が全 eval ステップ共通の実行基盤（`Session` → `make_torch_net`）、§4.2〜§4.5 が §3.2 表の各ステップの中身、§4.6 が同じ経路を流用した可視化である。
+本章は §3 の図の**内側ボックス（1 つの eval ステップの中身）**を詳述する。§4.1 が全 eval ステップ共通の実行基盤（`Session` → `make_torch_net`）、§4.2〜§4.5 が §3.2 表の各ステップの中身、§4.6 が同じ経路を流用した可視化、§4.7 が標準フロー外の運用（未学習モデルの評価）である。
 
 ### 4.1 共通の実行基盤 — `Session` と `make_torch_net()`
 
@@ -266,6 +266,98 @@ def record_model_metrics(cfg, key, metrics):
 ### 4.6 （オプション）推論結果の可視化・動画生成
 
 `bevformer_inference.py`（BEVFormer 専用）は、`eval_trained` と**同じ `make_torch_net()` 経路**を、メトリクス集計ではなく可視化・動画出力に流用したもの。`torchnet` サブコマンドで実行すると、アナログノイズが乗った推論結果を検出 box・BEV 図として動画で目視確認できる。4 サブコマンド（`pytorch` / `onnx` / `torchnet` / `ground-truth`）が共通パイプラインのバックエンドだけを差し替える。詳細は §9 の参照ファイルおよび `HOWTO_bevformer_carla_video_generation.md`。
+
+### 4.7 再学習前（未学習）アナログモデルの評価可否
+
+§2 の入力表は `eval_trained` の入力①を「学習済み Mythic モデル」と記すが、これは**標準フローでの想定であって実装上の制約ではない**。`to_training` の出力（＝ `train` を通していない未学習の Mythic モデル）をそのまま `eval_trained` に渡すことができる。以下、実装上の根拠と、BEVFormer tiny 1600x900 での実測結果を示す。
+
+#### 4.7.1 実装上ブロックする機構は存在しない
+
+| 確認箇所 | 内容 |
+|---|---|
+| `eval_onnx_step`（`conversion_steps.py:433-455`, §4.2） | 処理は `SessionFromConfig(cfg)` → `run_evaluator` → `record_model_metrics` のみ。**再学習済みか否かを判定する分岐は無い**。 |
+| `eval_mythic_model`（`bevformer/conversion_steps.py:558-569`） | `config.src` のパス 1 個だけから `evaluate()` を呼ぶ。前段ステップの実行履歴を参照しない。 |
+| `to_training` の op 列（`_session.py:215-332`, §8.0） | 末尾で `set_meta_data('__type', MODELType.MYTHIC)` を実行。pFSR/iFSR/DSF の量子化レンジは `ScaleAllNodes` / `BreakFSRIntoPFSRAndIFSR` が**実データ統計からこの時点で確定**させる（`train` を待たない）。 |
+| ノイズ注入（`noise.py`, §6.1） | `self.training` でゲートされていない。eval 時もノイズが乗る（§6.1 冒頭の注記と同じ理由）。 |
+
+つまり `to_training` の出力は「量子化レンジとアナログ層は完成しており、重みだけが FP32 由来のまま」という状態の**実行可能なアナログモデル**であり、TorchNet が読める以上 `eval_trained` は問題なく走る。前提となるのは `steps=eval_trained` を単発実行できること（§3.2 の `run_conversion_steps` の動き）と、`trained_model`（＝ `eval_trained.src`）のパス上書きだけである。
+
+#### 4.7.2 config の `*_untrained` キーは dead entry
+
+`configs/bevformer/bevformer_tiny.yaml` には未学習モデル向けと読めるキーが 3 つ定義されている:
+
+```yaml
+# configs/bevformer/bevformer_tiny.yaml:28,30,32
+fp_model_untrained:         '${data_dir}/fp32-${model_setup.resolution}-untrained.onnx'
+structural_model_untrained: '${data_dir}/structural-${model_setup.resolution}-untrained.onnx'
+mythic_model_untrained:     '${data_dir}/mythic-${model_setup.resolution}-untrained.onnx'
+```
+
+しかし `grep -rn model_untrained` を SDK ツリー全体（`*.py` / `*.yaml`）にかけると、**ヒットするのはこの定義箇所 3 行のみ**で、参照側が存在しない。どのステップの `src` / `dest` にも結線されていない未使用エントリである。SDK 側にも未学習モデルを評価する意図はあったと読めるが、専用ステップは用意されていない。したがって未学習モデルを評価するには、既存ステップのパスを明示上書きする必要がある:
+
+```bash
+# ① 未学習 Mythic モデルを生成（train を挟まない）
+python3 scripts/common/convert_model.py steps=to_training \
+    to_training.dest=$OUT/mythic-1600x900-untrained.onnx \
+    ++to_training.device_name=cpu          # ← §4.7.4 の OOM 回避
+
+# ② それを eval_trained に食わせる（trained_model が eval_trained.src の参照先）
+python3 scripts/common/convert_model.py steps=eval_trained \
+    trained_model=$OUT/mythic-1600x900-untrained.onnx \
+    eval_trained.metrics_file=$OUT/metrics_untrained.json
+```
+
+#### 4.7.3 実測結果 — 走るが精度は崩壊する（mAP = 0.0）
+
+BEVFormer tiny 1600x900 / nuScenes v1.0-mini（mini_val, 2 scenes 81 frames）で上記を実行した結果。`to_structural` → `to_training` → `eval_trained` の全ステップが EXIT=0 で完走し、正常な nuScenes メトリクス JSON が生成された。生成された未学習モデルは `model_type = MythicModel` で、Mythic ノード構成も学習済みモデルとほぼ一致する（`MythicConv2d` 76 vs 74、`MythicSum` 29、`MythicQuantizedMul` 12）。
+
+| 指標 | 未学習アナログモデル | 再学習済み（5 run 平均, `PLAN_bevformer_ppa_exploration.md` §2.1） |
+|---|---|---|
+| mAP | **0.0** | 0.2162 ± 0.0026 |
+| NDS | 0.0360 | 0.2149 ± 0.0027 |
+| mATE / mASE / mAOE / mAVE / mAAE | 1.0893 / 0.8415 / 1.0968 / 0.9304 / 0.8686 | — |
+
+全クラスの `AP_dist_{0.5,1.0,2.0,4.0}` が 0.0、すなわち**最も緩い 4.0 m 閾値でも 1 件もマッチしない**。ただし誤差項の内訳はクラス依存で、崩壊の仕方に差がある:
+
+- `car`: `trans_err` 1.2803 / `scale_err` 0.2762 / `orient_err` 1.3912 — 1.0（未検出時のデフォルト値）以外の実値。予測は出力されたが位置がマッチ閾値外。
+- `truck`: 全誤差項が 1.0 — そのクラスの予測が 1 件も無い。
+
+FP32 重みを 8bit アナロググラフに Denali ノイズ（§6.1 数式(1) `WeightNoise`）付きで載せると、検出そのものが成立しない。**再学習（QAT）は精度を「改善」する工程ではなく、アナログ実行を成立させる必須工程である**ことがこの実測から読み取れる。未学習モデルの評価は「SDK の実装上可能」ではあるが、ノイズ耐性のベースライン測定としては下限に張り付くため情報量が乏しい。
+
+#### 4.7.4 `to_training` の GPU OOM と `device_name=cpu` 回避策
+
+BEVFormer tiny 1600x900 の `to_training` は、GPU メモリ 45 GiB が完全に空いている状態でも 43.90 GiB を消費して CUDA OOM に至る（`Dropout.py:61` / `_observers.py:32` / `Div.py:23` で発生）。モデル自体は小さく（重み 34.5 M params = FP32 で 0.13 GiB）、原因は重みではなく**統計収集フェーズが全エッジの中間活性を保持し続けること**にある。
+
+`EdgeMetadataObserver.__call__`（`munc/_observers.py:25-34`）が、定数エッジ検出のために**初回バッチの値を `clone()` して保持する**:
+
+```python
+# munc/_observers.py:25-34
+def __call__(self, value):
+    self.shape = tuple(value.shape)
+    self.dtype = value.dtype
+    self._n_batches += 1
+    if self._n_batches == 1:
+        self._constant_value = value.detach().clone()      # ← 解放されない
+    elif self._constant_value is not None and not torch.equal(self._constant_value, value.detach()):
+        self._constant_value = None
+```
+
+`TorchNet.forward`（`_torchnet.py:382-500`）は `delete_unused_edges` / `_delete_after_update` で使用済みエッジを逐次解放するが、observer 側の clone がこの解放を無効化する。structural モデルから実測した中間活性の総量は **7.528 G 要素 = FP32 で 28.04 GiB**（最大の単一エッジが `[6, 256, 232, 400]` で 543.8 MiB）。6 カメラ × 1600x900 という入力形状がこの規模を生む。
+
+- `stat_n_samples_default` を減らしても解決しない（残るのは*初回*バッチの clone であってサンプル数に比例しない）。実測で 200 → 20 に減らしても OOM。
+- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` も効果なし（断片化ではなく実使用量の問題）。
+
+回避策は `++to_training.device_name=cpu`。`Session.device_name`（`_session.py:90`）は `StatsCollector`（`_session.py:99`）にのみ渡され、`StatsCollector` はそれを統計収集用の `TorchNet(device_name=...)`（`_stats_collector.py:164`）に使う。したがってこの指定は**統計収集の TorchNet だけを CPU に落とし、精度シミュレーション本体（`eval_trained`）には影響しない**。
+
+| ステップ | device | 所要時間（実測） | 備考 |
+|---|---|---|---|
+| `to_structural` | GPU | 約 1 分 | |
+| `to_training` | 統計収集のみ CPU | 約 35 分 | Mythic グラフ上での後段統計パスは 45 秒/サンプル |
+| `eval_trained` | GPU | 約 3 分 | 統計収集を行わないため OOM しない |
+
+`eval_trained` が統計収集を含まないのは、`eval_onnx_step`（§4.2）が `run_evaluator` を直接呼び `Session._stats` を経由しないため。精度シミュレーションを GPU で回す運用は維持できる。
+
+> 上記実測の成果物（`structural-1600x900.onnx`, `mythic-1600x900-untrained.onnx`, `metrics_untrained.json`, 各ステップのログ）はホスト `/mnt/nvme_scratch/mythic_untrained_probe/` に保存。
 
 ---
 
@@ -726,6 +818,8 @@ M2000 は全演算をアナログで実行できるわけではない。**アナ
 4. `train_huggingface` の QAT/蒸留詳細（`huggingface_classifiers/train.py`, 未読）。
 5. §8.3 の役割分担が意図的設計かはコード上の直接根拠なし（実装カバレッジ差からの推定）。
 6. `bevformer_inference.py` が他モデル（ResNet-50/YOLO 系）にも存在するか未確認。
+7. `configs/bevformer/bevformer_tiny.yaml` の `*_untrained` キー 3 個（§4.7.2）が参照されない理由。将来のステップ用の予約か、削除漏れかは不明。
+8. `EdgeMetadataObserver` の定数エッジ検出（§4.7.4）が初回バッチの clone 保持以外の実装を取れないか（shape/dtype/hash 比較で代替可能に見えるが、意図的な設計かは不明）。
 
 ---
 
