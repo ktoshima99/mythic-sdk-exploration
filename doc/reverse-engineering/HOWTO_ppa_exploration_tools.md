@@ -276,6 +276,19 @@ m2048はcombined frame rate 23.00fps(=1/43.47ms)しか出せないため、30fps
 
 「NOTE: Estimation for leakage, clock tree, chip I/O power will be added in future versions」——[02_ppa_estimation.md](02_ppa_estimation.md)で確認済みのLeakage/ClockTree未算入という限界は、PDFの公式ドキュメントでも明記されており確定。PPA推定値は絶対値のサインオフではなく相対比較専用として扱う。
 
+### レイテンシの律速要素を分解する(funcsim再実行不要)
+
+公表レイテンシは `max(ACE, SRAM, SIMD)` なので、**そのモデルがACE律速なのかSRAM律速なのか**は既定出力の`Critical Path ACE Latency`と`Maximum SRAM Read/Write Time`を見比べれば判定できる(§2の出力例では両方とも出ている)。ACE律速ならACE増設でレイテンシが縮むが、SRAM律速なら縮まない——Stage B/Cのnum_aces選定で直接効く判断材料になる。
+
+**`_ppa_*.tar.gz`に`artifacts/ppa/perf_trace_dump.h5`が保存されているので、約4時間のfuncsimを回し直さずに再解析できる**(解析自体は約9秒)。バイト法の項やタイル別内訳まで含めた全項の取得は:
+
+```bash
+tar xzf <model>_ppa_<ts>.tar.gz artifacts/ppa/perf_trace_dump.h5
+tools/perf_breakdown/perf_breakdown.sh artifacts/ppa/perf_trace_dump.h5 48 out_dir   # 48=m2048, 72=m2072
+```
+
+手順の原理・実測値・SIMD項が常に0である件は[02_ppa_estimation.md](02_ppa_estimation.md) §3.9を参照。
+
 ---
 
 ## 3. Accuracy Simulation: `convert_model.py steps=eval_trained`(Stage 0 / Stage A)

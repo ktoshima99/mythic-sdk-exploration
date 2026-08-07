@@ -272,6 +272,15 @@ total_ace_duration_ns = len(timesteps) * ACE_DURATION_NS
 ```
 = timestep 数 × 160ns(全 ACE 演算が直列に 1 timestep ずつ進む最小パス)。
 
+> **`timesteps` の定義は SRAM 由来**(重要): `timesteps` は `ts_accesses`(= `/sram_accesses` の
+> パース結果)のキー集合から作られる [perf2:545-550] のであって、`/ace_calcs` からではない。
+> したがって厳密には「ACE 演算が起きた timestep 数」ではなく **`/sram_accesses` に登場する
+> distinct timestep 数**である。実測(YOLOPX m2048)では SRAM timestep 47,230 に対し ACE
+> timestep 47,229 でほぼ一致し、`ACE ⊄ SRAM` は 0 件(= ACE 演算が取りこぼされてはいない)、
+> 逆に SRAM のみで ACE 演算の無い timestep が 1 件あり、これも 160ns として数えられていた。
+> 通常は「ACE 演算のある timestep 数」とみなして差し支えないが、**SRAM しか動いていない
+> timestep も 160ns を積む**点は定義上の含意として残る。
+
 **タイル別最大 SRAM 時間(バイト法)** [perf:844-859]。`*_per_tile[t]` は §3.2(B) の累積値:
 ```
 # ステップ1: タイル間 max(最も忙しいタイルの全timestep累積バイト)
@@ -357,6 +366,143 @@ Combined fps = 1e9 / frame_latency_ns                                [perf:1305]
   `Total Estimated MACs = macs_bn * 1e9` [perf:1295] として出力するだけ。レイテンシ計算には一切使わない。**
 
 PCIe 転送オーバーヘッドは含まないと明記 [perf:1308-1316]。
+
+**`npu_fps` 自体の算出式**(JSON 生成側 = `vnnmap` バイナリ)は
+[05_all_digital_ppa.md](05_all_digital_ppa.md) §2.2-§2.4 で逆アセンブルにより確定済み。要点のみ:
+
+```
+profiling.fps (= npu_fps) = nBatch × frequency / (procCycles + exposedDmaCycles)
+   ⇒ 1e9 / npu_fps = 1e9 × (procCycles + exposedDmaCycles) / (nBatch × frequency)
+```
+
+`procCycles` は `vSummaryProfile` が全レイヤについて `max(層内タイル最大 cycle, 1.1 × 理想 MAC cycle)` を
+累積した値、`exposedDmaCycles` は `dmaThreshold` による隠蔽判定を通した DMA cycle。
+注意点 2 件: (1) `vnnmap` stdout / JSON の `total_cycles` はこの分母とは**別系統の集計**で 0.1% 程度ずれるので、
+`total_cycles` からレイテンシを再計算しない。(2) `nBatch>1` では `npu_fps` はバッチスループットであり、
+`1e9/npu_fps` は 1 フレームあたりに正規化された値になる(`vnnmap` 表示の `eff. latency` とは `nBatch` 倍ずれる)。
+
+### 3.9 max を取る前の各項を取得する方法(実機検証済み)
+
+§3.4 の `maximum_bottleneck(_accesses)_ns` は 3〜4 項の `max` だが、**max を取る前の各項はすべて取得できる**。
+以下は v26.05.2 の `perf_analysis.py`(コンパイライメージ `compilerd-bin:v26.05.2` 内
+`/mythic/funcsim/bin/perf_analysis.py`、全 1357 行。以降 [perf2:NNN])で実機確認した結果である。
+v26.05.0 の `_extracted_compiler/perf_analysis.py`(1329 行)から reporting 層が構造化出力へ書き換わっており、
+行番号・出力経路が異なる。
+
+#### (1) アクセス法の 3 項は既定出力にそのまま出ている
+
+v26.05.2 では 3 項が summary テーブルに含まれるため、**追加作業なしで既存の ppa ログから読める**:
+
+| 出力行 | 対応する §3.4 の変数 |
+|---|---|
+| `Critical Path ACE Latency` [perf2:992-993] | `total_ace_duration_ns` |
+| `Maximum SRAM Read/Write Time (over N ACE tiles)` [perf2:1001-1002] | `max_sram_duration_accesses_ns` |
+| `Maximum SIMD Operation Time (over N ACE tiles)` [perf2:1004-1005] | `max_simd_usage_by_any_tile` |
+| `Analog NPU Total Estimated Processing Time ...` [perf2:982-985] | `maximum_bottleneck_accesses_ns`(= 上 3 項の max) |
+
+`--report-style {TABLE,CSV,JSON}` / `--report-level {SUMMARY,DETAILED}` [perf2:144-161] で書式と粒度を選べる。
+`DETAILED` を付けると §3.3 の `total_duration_(accesses_)ns`(epoch 積算)や excess 内訳、全チップ SRAM
+総量も同じテーブルに出る。**出力は `logging` 経由なので stdout ではなく stderr に出る**(リダイレクトは `2>&1`)。
+
+#### (2) バイト法の 2 項は定数 1 行の書き換えが必要
+
+v26.05.2 は `SRAM_METHOD = "accesses"` [perf2:95] という**モジュール定数でハードコード**されており
+(コメントに "General use is hard-coded to 'accesses'")、CLI フラグが無い。この定数が
+`SramCalculationMethodFilter` [perf2:196] と report 組み立て [perf2:1294-1311] の両方を制御するため、
+`"bytes"` に書き換えると `max_sram_read_duration_ns` / `max_sram_write_duration_ns` が出力される。
+**両手法の値は同一トレースから同時に計算されている** [perf2:883-895 相当] ので、書き換えは
+出力フィルタだけを変え、数値そのものには影響しない。
+
+#### (3) タイル別内訳は DEBUG ゲートを外す
+
+各タイルの SRAM/SIMD 時間(= タイル間 max を取る前の全タイル分)は
+`if logging.getLogger().isEnabledFor(logging.DEBUG)` [perf2:1206,1240] で囲まれている。これは
+コメントどおり**実行コスト回避のためのゲートに過ぎない**("NOTE: conditioned on logger level for
+performance reasons")ため、条件を `True` に置換すれば INFO のまま per-tile 行が report に入る
+(`--log-level DEBUG` を使うと per-timestep のデバッグ出力も併発して数百 MB のログになるので非推奨)。
+
+#### (4) funcsim の再実行は不要 — 既存 `_ppa_*.tar.gz` を再解析する
+
+**これが最重要点。** `mythic-ppa-estimators` は実行後に `<model>_ppa_<timestamp>.tar.gz` を生成し、
+その中に **`artifacts/ppa/perf_trace_dump.h5` を保存している**(SDK イメージ内
+`.../site-packages/mythic/ppa_estimators/interface.py:277-298`。以降 [iface:NNN])。`perf_analysis.py` は
+この `.h5` だけを入力に取る純粋な後処理なので、**約 4 時間かかる funcsim を回し直す必要はない**。
+実測で `.h5` 展開が 6〜28 秒、解析 1 回が 約 9 秒(YOLOPX 80MB / BEVFormer 390MB)。
+
+`--num-aces` は `.h5` に含まれないため**手で渡す**(m2048→48, m2072→72)。値は
+`total_ace_duration_ns` には影響せず、§3.6 の ACE 利用率と面積表示にのみ効く。
+
+#### 自動化スクリプト
+
+`tools/perf_breakdown/perf_breakdown.sh` が (1)〜(3) を 1 コマンドでまとめて実行する
+(イメージから `perf_analysis.py` を取り出し、2 つのパッチ版を生成して両方走らせる):
+
+```bash
+tar xzf <model>_ppa_<ts>.tar.gz artifacts/ppa/perf_trace_dump.h5   # 先頭メンバなので高速
+tools/perf_breakdown/perf_breakdown.sh artifacts/ppa/perf_trace_dump.h5 48 out_dir
+```
+
+#### 実測値(v26.05.2, high_optimization)
+
+| 項 | YOLOPX m2048(12 タイル) | BEVFormer-tiny m2072(18 タイル, 6 カメラ) |
+|---|---|---|
+| `Critical Path ACE Latency` | 7.56 ms | 23.37 ms |
+| `Maximum SRAM Read/Write Time`(アクセス法) | 6.83 ms | **26.95 ms** |
+| `Maximum SRAM Read Time`(バイト法) | **7.85 ms** | **29.19 ms** |
+| `Maximum SRAM Write Time`(バイト法) | 4.33 ms | 21.94 ms |
+| `Maximum SIMD Operation Time` | 0.00 ms | 0.00 ms |
+| **公表レイテンシ(アクセス法)** | **7.56 ms**(ACE 律速) | **26.95 ms**(SRAM 律速) |
+| 公表レイテンシ(バイト法, 参考) | 7.85 ms | 29.19 ms |
+
+読み取れること:
+
+- **律速要素がモデルで入れ替わる。** YOLOPX m2048 は ACE 律速(7.56 > 6.83)で、ACE を増やせば
+  レイテンシが縮む余地がある。一方 BEVFormer m2072 は **SRAM 律速**(26.95 > 23.37)で、
+  ACE をこれ以上増やしても SRAM 側が先に頭打ちになる。§3.6 の ACE 利用率
+  (YOLOPX 72.75%)だけを見ていては区別できない情報である。
+- **SIMD 項は常に 0。** `.h5` の `simd_calcs/*` を直接確認したところ**全タイルで行数 0**
+  であり、funcsim が SIMD イベントを出していない(値が小さいのではなく計測されていない)。
+  したがって実質の max は ACE と SRAM の 2 項の比較である。§7 の限界に該当する。
+- バイト法は 2 モデルとも SRAM read 律速でアクセス法より 4〜8% 大きい値を出す。既定の公表値は
+  アクセス法(§3.3 の比較表のとおり RTL に近いとされる方)なので、比較にはアクセス法を使う。
+
+> **注意: 上の 2 モデルの数値は直接比較できない**(SKU も入力形状も異なる)。律速要素の判定は
+> 各モデル内での項の大小関係で読むこと。
+
+#### 3.9.1 公表レイテンシは ACE クリティカルパスを下回らない
+
+`maximum_bottleneck(_accesses)_ns` は `total_ace_duration_ns` を**引数に含む `max`** である
+[perf:883-895] ため、定義上
+
+```
+公表レイテンシ ≧ total_ace_duration_ns = len(timesteps) × 160ns
+```
+
+が常に成立する。SRAM/SIMD 項がどれだけ小さくてもこの下限は縮まない。上の実測でも YOLOPX m2048 は
+`max(7.56, 6.83, 0.00) = 7.56 ms` と ACE 項がそのまま公表値になっている。§3.3 の per-timestep 側でも
+各 timestep が `max(ACE_DURATION_NS, ...)` [perf:705-710] で 160ns を下限に持つため、同じ床が効く。
+
+**ただし「ACE クリティカルパスは固定の床」ではない。** `len(timesteps)` は静的な演算数ではなく
+**funcsim が実行したスケジュール上の distinct timestep 数**なので、コンパイル条件を変えると変動する。
+同一モデル・同一 total ACE ops(1,649,376)の YOLOPX で SKU だけを変えた実測:
+
+| | ACE タイル数 | `len(timesteps)` | ACE クリティカルパス |
+|---|---|---|---|
+| YOLOPX m2048 | 12 | 47,230 | 7.56 ms |
+| YOLOPX m2072 | 18 | 36,601 | 5.86 ms |
+
+ACE を増やすと並列度が上がって timestep 数が減り、床そのものが下がる。したがって:
+
+- **1 つのトレース内では** ACE クリティカルパスは動かない床であり、公表レイテンシがこれを下回ることはない。
+- **SKU をまたぐと** 床自体が動くので、「ACE 律速だから ACE を増やしても無駄」ではなく **ACE 律速のときこそ
+  ACE 増設が効く**(m2048 の 7.56ms → m2072 の 5.86ms)。逆に SRAM 律速のモデル(BEVFormer m2072)では
+  ACE 増設で床が下がっても SRAM 項が max を握り続けるため、レイテンシは改善しにくい。
+
+なお床は `total_ace_ops × 160ns ÷ num_aces`(= §3.6 の「最小理論 ACE 実行時間」)とは別物で、常にそれ以上に
+なる。YOLOPX m2048 では最小理論 5.50ms に対し実際の ACE クリティカルパス 7.56ms で、この比が
+ACE 利用率 72.75% として報告される。単一 ACE タイルの演算数から求まる 24.20ms(最も忙しいタイルの
+151,248 ops × 160ns)とも一致しない——`len(timesteps)` はタイル横断の**同時実行を 1 timestep に畳んだ**
+数だからである。
 
 ---
 
