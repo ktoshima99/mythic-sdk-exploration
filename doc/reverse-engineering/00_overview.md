@@ -15,6 +15,8 @@ Mythic M2000（フラッシュ／NVM メモリセルをアナログ乗算器と�
 | 02 | [02_ppa_estimation.md](02_ppa_estimation.md) | **PPA 推定**（性能・電力・面積） | 解析済（Compiler コンテナ側） |
 | 03 | [03_accuracy_simulation.md](03_accuracy_simulation.md) | **精度シミュレーション** | 解析済（Part A: SDK コンテナ本体 / Part B: Compiler コンテナ部品） |
 | 04 | （未作成） | **再学習** | 未解析（SDK コンテナ側） |
+| 05 | [05_all_digital_ppa.md](05_all_digital_ppa.md) | **全デジタル実行時の PPA 推定** | 解析済（Compiler コンテナ側、BEVFormer-Tiny 実測あり。`vnnmap` バイナリ逆アセンブルにより cycle/電力モデルも確定） |
+| 06 | [06_to_structural.md](06_to_structural.md) | **`to_structural` ステップ**（構造整理・on/off-chip 宣言） | 解析済（SDK コンテナ側、6 モデル全実装 + BEVFormer/resnet50 実測あり） |
 
 ### 解析手法
 - **コンパイラコンテナ**: `compiler_m2000.tar`（OCI イメージ）を `docker load` し、`compilerd-bin:1.5.2` から生 Python ソース約 27,000 行を `_extracted_compiler/` に抽出。doc 01/02、および doc 03 Part B はこれに基づく。
@@ -202,7 +204,7 @@ GEN2 ユーザーが直接実行する CLI は 3 つ（`doc/user-guides/GEN2 Use
 
 | step_order のステップ | 状態への作用 | 遷移後の状態 | ①②③ |
 |---|---|---|---|
-| `to_structural` | **進める** | ORIGINAL → structural | ① |
+| `to_structural` | **進める**（形式上のみ。ONNX に "structural" 型は無く、`__type` メタデータも書かれない） | ORIGINAL → structural | ① |
 | `to_training` | **進める** | structural → **MYTHIC** | ① |
 | `train` | MYTHIC のまま（重みを学習）| MYTHIC | ① |
 | `eval_trained` | MYTHIC を読むだけ（TorchNet 化して評価）| MYTHIC | ② |
@@ -237,7 +239,7 @@ OriginalModel               中間graph                    MythicModel        BC
 | モデル状態 / 中間表現 | 実体・クラス | 役割 | 使われるステップ |
 |---|---|---|---|
 | **ORIGINAL** (`OriginalModel`) | 素の FP32 ONNX | 学習/エクスポート直後の入力モデル | `to_onnx` の出力 |
-| **structural** | 中間 ONNX グラフ | on/off-chip マーキング（＝演算種別レベルの実行区分。後述レベル A）・定数畳み込み等の構造整理済み | `to_structural` |
+| **structural** | 中間 ONNX グラフ（ただし ONNX 上に固有の型は無く、依然 ORIGINAL と推論される。詳細は [06_to_structural.md](06_to_structural.md) §3） | 手動 off-chip マーキング（後述レベル A の一部）・定数畳み込み等の構造整理済み。**内容は munc 側の共通実装が無くモデル毎に大きく異なる**（[06_to_structural.md](06_to_structural.md) 参照） | `to_structural` |
 | **MYTHIC** (`MythicModel`) | `MythicConv2d`/`MythicLinear` 等の Mythic ノード（`_constants.py:89-94`）を持つ ONNX | **アナログaware 再学習可能**な量子化グラフ（FSR 分解・DSF 学習可能化済み） | `to_training` の出力 → `train` の対象 |
 | **BCM** (`BCMModel`) | `BCMConv2d`/`BCMLinear`（`bcm_layers.py`）= **アナログ MAC(`mma_class`) + デジタルデータパス**（doc 03 A.6.1） | 学習済みモデルを**ハードウェア忠実に数値再現**する中間表現。別名 **ACM (Analog Compute Model)** | `to_acm` で生成 → `eval_acm`・`create_artifact` の入力 |
 | **COMPILER** (`CompilerModel`) | コンパイラ入力用に整えた ONNX（`compiler_ready_artifact.tar.gz`） | Compiler コンテナへ渡す最終成果物 | `create_artifact` の出力 |
@@ -255,11 +257,13 @@ OriginalModel               中間graph                    MythicModel        BC
 
 | 区分 | 対象 | どう確定するか | 再学習での扱い |
 |---|---|---|---|
-| **off-chip（ホスト CPU）** | チップ非対応 op・非対応属性の演算 | `MarkUnsupportedOpsOffChip`（`_session.py:199`）→ `is_op_type_supported_on_chip()`（`_session_tools.py:404`）。off-chip 化 | Mythic 化されない（`ConvertNodesToMythic` は `OFFCHIP_IGNORE`＝off-chip ノードに適用しない, `_base_op.py:222`）。量子化・再学習の対象外 |
+| **off-chip（ホスト CPU）** | チップ非対応 op・非対応属性の演算、およびモデル実装者が明示的に off-chip 指定した演算 | 2 段階で確定する（下記「off-chip 確定の 2 段階」参照）: ① `to_structural` でのモデル固有の**手動**マーキング、② `to_training` 内 `MarkUnsupportedOpsOffChip`（`_session.py:199`）→ `is_op_type_supported_on_chip()`（`_session_tools.py:404`）による op 種別の**自動**判定 | Mythic 化されない（`ConvertNodesToMythic` は `OFFCHIP_IGNORE`＝off-chip ノードに適用しない, `_base_op.py:222`）。量子化・再学習の対象外 |
 | **on-chip・デジタル（SALU）** | depthwise conv | `MarkDepthwiseConvsAsDigital`（`_session.py:255`）で `__digital_onchip` 属性付与（`_constants.py:215`）。to_acm/SwitchBCM で `int8model`（INT8/SALU データパス）に固定（`convert_convs_to_bcm.py:58-63`, `switch_bcm.py:40-45`）| INT8 デジタルとして扱う（アナログノイズは乗らない）|
 | **on-chip・アナログ MAC** | 上記以外の Conv/Gemm/MatMul/Mul 等 | `ConvertNodesToMythic`（`_session.py`）で `MythicConv2d`/`MythicLinear` 等に変換 | **アナログaware 再学習の対象**。FSR 分解・DSF・8bit 量子化＋ノイズモデルを forward に注入 |
 
 **「on-chip = アナログ」ではない**: on-chip 対応ノード一覧（`SUPPORTED_ON_CHIP_NODES_BOREAS`, `_constants.py:245-272`）には、アナログ MAC 候補（`Conv`/`Gemm`/`BCMConv2d`/`BCMLinear`）と**デジタル演算（`Mul`/`Add`/`Sum`/`MaxPool`/`AveragePool`/`Relu`/`Concat`/`Slice`/`Resize` 等）が最初から混在**している。チップ上には ACE（アナログコア）と SALU/デジタルデータパスの両方があり、どちらも「on-chip」。デジタル専用 op（`MaxPool`/`Relu`/`Add` 等）は最初からデジタル側。
+
+**off-chip 確定の 2 段階**（[06_to_structural.md](06_to_structural.md) §5.2 で詳述）: `to_structural` 実行時点では `Session` の `hwconfig` が未設定（`SessionFromConfig` が `hwconfig` キーを禁止する, `cli/helpers.py:78-81`）ため、op 種別による自動判定（`MarkUnsupportedOpsOffChip`）は**実行できず**（`hwconfig is None` で `ValueError`）、`to_structural` が付ける off-chip マークは**すべてモデル実装者が明示したもの**（config のノード名リスト・コード内ハードコードリスト・トポロジ DFS 等、モデルごとに異なる 5 種の戦略）に限られる。op 種別に基づく機械的な off-chip 化は、`hwconfig` が設定された後の `to_training` 内で追加される。したがって「演算種別レベルの区分が再学習の前に確定する」こと自体は正しいが、その内訳は「`to_structural` の手動宣言」＋「`to_training` の自動判定」の 2 段階である。
 
 #### レベル B — 物理配置レベルの分割（コンパイラ・`dnn_compiler`。再学習の後）
 
@@ -274,7 +278,7 @@ OriginalModel               中間graph                    MythicModel        BC
 
 - **アナログ / デジタル / off-chip の演算種別レベルの区分は SDK（`to_structural`/`to_training`）で確定**し、これが**再学習の前提**になる（8bit 量子化・ノイズ注入の対象ノードが定まる）。
 - コンパイラが担うのは**物理配置とパーティション分割**（レベル B）であり、演算種別レベルのアナログ/デジタル選択を新たに決めるものではない。
-- したがって「structural 時点でアナログ/デジタルが決まっているのか」への答えは **Yes（演算種別レベルでは確定済み）**。コンパイラはその配置を最適化する。
+- 「structural 時点でアナログ/デジタルが決まっているのか」への答えは **一部 Yes**: `to_structural` で確定するのは**モデル実装者が明示した off-chip 区分のみ**（[06_to_structural.md](06_to_structural.md)）。op 種別による自動 off-chip 判定・depthwise のデジタル指定・残りのアナログ MAC への変換はいずれも `to_training` の担当であり、「structural → MYTHIC」への遷移が完了する時点（再学習の直前）で演算種別レベルの区分が確定する。コンパイラはその配置を最適化する。
 
 ### Compiler コンテナ側の中間表現（doc 01）
 
@@ -363,7 +367,7 @@ Compiler コンテナに `COMPILER` モデルが渡ると、さらに別系統�
 
 優先度順の候補:
 
-1. **再学習ロジックの解析（最優先候補）**: `mythic-model-zoo/*/train.py` 群（pythia/yolopx/huggingface/bevformer, QAT・蒸留・ACM 変換 `convert_training_to_acm_step`）を調査し `04_retraining.md` を新規作成。SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.0`）の `munc` / `mythic-model-zoo` が対象。
+1. **再学習ロジックの解析（最優先候補）**: `mythic-model-zoo/*/train.py` 群（pythia/yolopx/huggingface/bevformer, QAT・蒸留・ACM 変換 `convert_training_to_acm_step`）を調査し `04_retraining.md` を新規作成。SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.0`）の `munc` / `mythic-model-zoo` が対象。**前段の `to_structural`（構造整理・on/off-chip 手動宣言）は解析済み**（[06_to_structural.md](06_to_structural.md)）。未解析は `train.py` 本体（重み学習ループ・QAT・蒸留）のみ。
 2. **精度シミュレーションの未解明点の解消**: doc 03 §D に列挙した項目（`hw_model.randomize()` の実パラメータ名、Hydra config の実 YAML、`munc_acm_signoff` バージョン差異の背景等）。`mythic.acm.denali.*` 等の外部参照パッケージの追加解析が必要。
 3. **コンパイラバイナリのさらなる解析**: `vnnmap` / `dnn_compiler` の逆アセンブル・動的トレースによる分割アルゴリズムの推定。
 4. **実行トレースの取得**: 実際にモデルをコンパイル・PPA・精度評価まで実行し、生成される `.vidir` / `.vci` / `perf_trace_dump.h5` / `metrics.json` の実データで各ドキュメントの記述を検証。
