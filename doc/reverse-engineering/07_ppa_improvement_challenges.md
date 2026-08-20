@@ -47,6 +47,59 @@ BEVFormer-TinyとYOLOPXという2モデルのSKU探索([PLAN_bevformer_ppa_explo
 
 **露出されていないもの**: ADC/DACビット深度(8bit固定)、sparsity、BitSpreadingMode(クローズドソースの`dnn_compiler`/`vnnmap`内部で決定)。デジタル側のarea係数(v-MPコア単体の面積、SRAMマクロ面積/MB)もSDK外(§3-7)。
 
+### 2.1 P/P/A軸別の整理——各パラメータがどの軸に効くか
+
+上表のレバーをArea/Performance(latency)/Powerの3軸に分けて再整理する。
+
+**Area(A)に影響するパラメータ**
+
+| パラメータ | 効き方 |
+|---|---|
+| `num_aces` | **唯一の主要面積パラメータ**。物理傾き5.278 mm²/ACEで単調増加(24→158mm², 48→253mm², 72→380mm²、`PLAN_bevformer_ppa_exploration.md` §4.1) |
+
+デジタル側(v-MPコア)の面積係数はSDKから一切露出されない(§3-7)。`nMPs`(MACアレイ数)・`pCluster`は構成として振れるが、それを面積へ変換する係数がSDK内に存在しないため、デジタル側のAは原理上パラメータ化できない。
+
+**Performance(latency)に影響するパラメータ**
+
+公表レイテンシは`max(ACEクリティカルパス, SRAM時間, SIMD時間)`(アナログ)+デジタル側latency(直列加算)という構造のため(出典: [02_ppa_estimation.md](02_ppa_estimation.md) §3.4, §3.8)、律速項ごとに効くパラメータが変わる。
+
+| パラメータ | 効く経路 |
+|---|---|
+| `num_aces` | ACEクリティカルパスを短縮(並列化)。SRAM-boundなら効かない(§3-1) |
+| モデル構造(層形状・充填率・重み再利用度) | ACE演算回数・SRAM往復量そのものを規定(§4.2, §4.3) |
+| `n_mps` | タイル分割・並列度(BEVFormerでは対応YAMLキー未確認) |
+| OCRAM0/OCRAM1/DDR | DMA隠蔽量(デジタル側)。512MBまで拡張して初めて33ms達成という非現実的な例(§3-4) |
+| `frequency` | デジタル側latencyに線形。DMAモデルがcycle単位のため高周波側は楽観的に振れる |
+| `nMPs`(全デジタル実行時) | 一見効きそうだが**増やすと悪化**(exposed DMA支配、§3-4)——直感に反する逆効果レバー |
+| `xTile` | デジタル側タイル数。増やすとDMAサイクル爆発(xTile=4で10.9倍、§3-4) |
+| `dmaThreshold`/`readDiv*`/`readLatency*` | デジタル側DMA隠蔽判定の閾値・速度(cfgから上書き可能) |
+| コンパイラeffortフラグ | 同一area内でのlatency-powerトレードオフ(本探索群では未着手) |
+
+**Power(power)に影響するパラメータ**
+
+| パラメータ | 効く経路 |
+|---|---|
+| `num_aces` | 重み複製→SRAMトラフィック増→power増(固定fps時、§3-2)。「ACEを増やせばpowerが下がる」という直感が成立しない主因 |
+| 推論レート(fps) | `power = 1推論あたりエネルギー × 推論レート`で直接線形([02_ppa_estimation.md](02_ppa_estimation.md) §4) |
+| `frequency` | デジタル側`Power@30fps`は per-inference エネルギーの外挿値のため実は**不変**(§3-6、[05_all_digital_ppa.md](05_all_digital_ppa.md) §5.2)——高周波でも変わらないという非直感的挙動 |
+| `nMPs`/OCRAM(デジタル側) | DDRトラフィック経由でpowerに影響(nMPs増→悪化、OCRAM増→改善、§3-4) |
+| `tensor_n_bits` | 量子化ビット幅(8/16のみ)。ビット幅が上がるほどSRAMトラフィック・演算コストが増える方向(4/6bitは選択肢自体がない、§3-5) |
+| `pow*Pj`係数群(デジタル)/`ENERGY_TABLE`(アナログ) | プロセスノード依存(28/12/5nm)のアクセス単価そのもの。通常は変更対象ではない固定値 |
+
+**3軸を横断して結合するパラメータ(トレードオフの核)**
+
+最も重要な点は、**`num_aces`だけがArea・Performance・Powerの3軸すべてに同時に効く**ことである(§3-2)。これが「単純な1軸の探索にできない」理由の核心で、他のパラメータ(frequency・OCRAM・`n_mps`・コンパイラeffortフラグ等)は基本的にareaを固定したままlatencyとpower(主にデジタル側)にのみ効く。
+
+| パラメータ | Area | Performance | Power |
+|---|---|---|---|
+| `num_aces` | ●(唯一の主要因) | ● | ● |
+| モデル構造(重み再利用度・充填率) | ○(重み容量経由で間接) | ● | ● |
+| OCRAM/DDR/`n_mps`/`frequency`(デジタル側) | ✕(露出なし) | ● | ● |
+| `tensor_n_bits` | ✕ | ○ | ● |
+| コンパイラeffortフラグ | ✕(area固定のまま) | ● | ● |
+
+`num_aces`が3軸を同時に動かす一方、他のレバーは基本的に「areaを固定したままP/Pだけを動かす」性質を持つ。これは`PLAN_bevformer_ppa_exploration.md` §7が挙げる「同area内でのlatency-powerトレードオフ軸」という次の探索候補の位置づけとも整合する。
+
 ---
 
 ## 3. 主要課題
