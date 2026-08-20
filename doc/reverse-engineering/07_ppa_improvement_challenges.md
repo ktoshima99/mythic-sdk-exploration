@@ -138,6 +138,18 @@ BEVFormerフルグラフを全デジタル実行した`nMPs`スイープ(2GHz固
 
 **含意**: ハイブリッド構成(アナログ+デジタル)とオール・デジタル構成をarea軸で公平に比較することは、現状のSDKだけでは不可能。全デジタル案の実行可能性を評価するには、latency/powerだけでなくarea見積り(SDK外のデータシート等)を別途取得する必要がある(既にlatency/powerだけでも全デジタルはハイブリッドに対し1.9倍/5.7倍劣位であることが判明しているため、area面での劣位が確定すれば全デジタル案は完全に棄却できる)。
 
+#### 3-7.1 デジタル側PPA推定はアナログ側に比べ成熟度が低い[推測]
+
+面積の欠落(3-7)は単独の欠陥ではなく、デジタル側PPA推定経路(`vnnmap --explore`)全体がアナログ側(`perf_analysis.py`/`power_estimator.py`)に比べ簡易的な段階にとどまっていることの一部と見るのが妥当と考えられる。根拠となる具体的な指標:
+
+- **キャリブレーションがランダム1サンプル。** デジタル経路の量子化は`QuantizationConfig(calibration_dataset_size=1)`(ランダム1サンプルのダミー量子化)と`skip_validation=True`(数値等価チェックのスキップ)で構成され(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §2)、得られる値は「cycles/powerの見積りにのみ使える」と留保されている(同§8)。
+- **効率(利用率)計算が実際の構成を見ない。** `efficiency %`は`64 MAC/cycle/MP`固定で計算され、`nMACs`(実際のMACアレイ構成)を参照しない(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §2.2)。既定値(nMACs=32)では偶然一致するが、`nMACs=64`にすると表示52.52%に対し真の利用率は約26%——構成を変えると表示自体が不正確になる。対照的にアナログ側のACE利用率は`total_ace_ops`と`num_aces`から都度計算される([02_ppa_estimation.md](02_ppa_estimation.md) §3.6)。
+- **サイクルモデルに物理的根拠のないヒューリスティックが残る。** MACオーバーヘッド一律+11.1%(`n/9`)、1層あたり「理想MAC時間の110%」を下限とするフロア、DDRレイテンシがサイクル単位でモデル化されているため周波数を上げるとDDRアクセス時間も比例して短くなる扱いになる(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §2.3、§8の留保事項)。アナログ側の電力モデルはADC/AIDACの電流値(50°C typical、電圧×電流の物理式)まで踏み込んだ回路レベルの推定を行っており([02_ppa_estimation.md](02_ppa_estimation.md) §4.4)、この点で対照的。
+- **集計系統が2つに分岐し食い違う。** stdout最終ブロックの`Total`と、実際にfps/latencyの分母になる`vSummaryProfile`は別系統の集計で、0.125%の差が生じる(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §2.4)。逆アセンブル調査なしにはこの食い違いは把握できなかった。
+- **フルグラフ実行に一次サポートがない。** 出荷スクリプトの既定`TRANSFORMER_PART_ONLY=True`はTransformer部分のみを対象とし、フルグラフを通すには2つのSDK側の問題(ONNX local function重複、Cap'n Protoのblob上限超過)へのモンキーパッチが必要(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §7)。アナログ側の`mythic-ppa-estimators`のような一次CLIや、`perf_breakdown.sh`のような専用デバッグツールに相当するものがデジタル側には存在しない。
+
+一方で、デジタル側の電力モデル自体(DDR/OCRAM/DMEM/IMEM/MAC/NoCの各アクセス種別ごとの`pow*Pj`係数、出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §5.1)やDMAモデル(`readDiv`/`readLatency`/`dmaThreshold`によるDMA隠蔽判定、同§2.3)は、アナログ側の`ENERGY_TABLE`と同程度の粒度を持つ。**「デジタル側に電力モデルが存在しない」わけではなく、面積の欠落・キャリブレーションの粗さ・効率計算の構成非依存性・フルグラフ実行の非一次サポートという複数の点でアナログ側に比べ未成熟、という言い方が正確である。**
+
 ### 3-8. コンパイラ/ソルバーの非決定性・既知バグ
 
 - BEVFormer m2024: CP-SAT `status: UNKNOWN`(122分後にタイムアウト。INFEASIBLE証明ではない。出典: `HOWTO_ppa_exploration_tools.md` §1)。
@@ -258,6 +270,7 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 | 量子化ビット幅は8/16固定(3-5) | 量子化以外の軸(SKU・構造)で改善する | `tensor_n_bits` |
 | 電力モデルは相対比較専用(3-6) | 絶対値のサインオフには使わない | — |
 | デジタル側面積が推定不可(3-7) | 全デジタル案の面積劣位は別途確認が必要 | — |
+| デジタル側PPA推定は全体的に未成熟(3-7.1) | キャリブレーション・効率計算・フルグラフ実行の粗さを踏まえ数値を額面通りに使わない | — |
 | コンパイラ非決定性・既知バグ(3-8) | 重み容量の事前計算でコンパイル試行を減らす(4.2) | — |
 | A_max未確定(3-9) | モデル軽量化(約24%短縮目標)かA_max見直しの二択 | — |
 | depthwise Convは強制デジタル化 | on-chip密度を優先する場合は比率を絞る(4.2) | `MarkDepthwiseConvsAsDigital` |
