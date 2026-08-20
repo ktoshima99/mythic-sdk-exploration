@@ -66,6 +66,23 @@ BEVFormer-TinyとYOLOPXという2モデルのSKU探索([PLAN_bevformer_ppa_explo
 
 **含意**: ACE-boundなモデル(YOLOPX)ではACE増設がレイテンシ短縮に直接効くが、SRAM-boundなモデル(BEVFormer)ではACEを増やしてもSRAM項が頭打ちを続けるため改善しにくい([02_ppa_estimation.md](02_ppa_estimation.md) §3.9.1)。ACE利用率(YOLOPX 72.75%、BEVFormer 69.43%)だけを見ていては両者を区別できない——律速項の判定は「そのモデルにACE増設が効くか」を決める前提条件であり、モデル構造の変更やSKU選定の前に必ず行うべき最初のステップになる。判定は既存の`_ppa_*.tar.gz`から`perf_breakdown.sh`で約9秒で可能(funcsim再実行不要、[02_ppa_estimation.md](02_ppa_estimation.md) §3.9(4))。
 
+#### 3-1.1 ACE数を増やしても律速項自体は反転しない(実測範囲内)[推測]
+
+既存2モデルはいずれも48/72 ACEの2点で実測されており、律速項がACE数を変えることで反転するかを確認できる:
+
+| モデル | ACE数 | ACEクリティカルパス | SRAM時間(=`Analog NPU Processing Time`。両モデルともこちらが`max`) | 律速 | SRAM/ACE比 |
+|---|---|---|---|---|---|
+| YOLOPX | 48 | 7.56 ms | 6.83 ms | ACE-bound | 0.904 |
+| YOLOPX | 72 | 5.86 ms | 4.99 ms | ACE-bound(変化なし) | 0.852 |
+| BEVFormer-Tiny | 48 | 35.22 ms | **38.85 ms** | SRAM-bound | 1.103 |
+| BEVFormer-Tiny | 72 | 23.37 ms | 26.95 ms | SRAM-bound(変化なし) | 1.153 |
+
+出典: `PLAN_yolopx_ppa_exploration.md` §4.1-4.2、`PLAN_bevformer_ppa_exploration.md` Phase 2/3 実測表。BEVFormerの`Analog NPU Processing Time`(=`maximum_bottleneck_ns`、[02_ppa_estimation.md](02_ppa_estimation.md) §3.4)はSRAM-boundである以上、定義上そのままSRAM時間の値と一致する(ACEクリティカルパスからの残差計算ではない)。
+
+**両モデルとも48→72で律速項は反転せず、むしろ支配側がより支配的になっている**(YOLOPXはACE側の比率が下がり=ACE優位が拡大、BEVFormerはSRAM側の比率が上がり=SRAM優位が拡大)。メカニズム[推測]: ACE数を増やすとACEクリティカルパスは並列化により直接短縮される。SRAM時間も「最も忙しい1タイルあたりの負荷」がタイル分散で下がる効果を受けるが(YOLOPX実測: 最繁忙タイル負荷-31.0%、SRAM時間-26.9%、§3-2参照)、同時に並列化のための重み複製で総SRAMトラフィックは増える(同+5.3%/+7.3%)。この2つの相反する力の綱引きの結果、今回の2モデルではACE項の方が相対的に速く下がったため、支配項の比率が広がる方向に動いた。
+
+この綱引きの結果は決定論的ではなく、**ACE項とSRAM項がほぼ等しい(比率が1に近い)モデルであれば、ACE数を増やした際にどちらが先に下がるかで律速項が反転する可能性は原理的にある**。今回の2モデルはいずれも比率が0.85〜1.15程度で、たまたま反転するほどの拮抗点ではなかっただけであり、「ACE数を増やしても律速項は反転しない」という一般法則としては確立していない。
+
 ### 3-2. 並列化のための重み複製がarea・SRAMトラフィック・powerを結合する
 
 コンパイラはACE数が多いほど並列化のために重みを複製する。YOLOPXの48→72 ACE実測:
