@@ -2,7 +2,7 @@
 
 Mythic M2000 SDK上でのAIモデルPPA(Power/Performance/Area)改善に必要な事項と主要な課題を、既存の実測結果を横断的に整理したもの。対象は主に BEVFormer-Tiny([PLAN_bevformer_ppa_exploration.md](PLAN_bevformer_ppa_exploration.md))と YOLOPX([PLAN_yolopx_ppa_exploration.md](PLAN_yolopx_ppa_exploration.md))の2モデルのSKU探索結果、および全デジタル実行の実測([05_all_digital_ppa.md](05_all_digital_ppa.md))。
 
-本ドキュメントは**新規のコード調査・実機実行を行わず**、既存ドキュメント(`00_overview.md`〜`06_to_structural.md`, `PLAN_*`, `HOWTO_*`, `FUTURE_*`)の記述・実測値を再整理・外挿したものである。数値の一次出典はすべて各節に明記する。外挿・未検証の記述には**[推測]**を付す。
+本ドキュメントは**新規のコード調査・実機実行を行わず**、既存ドキュメント(`00_overview.md`〜`05_all_digital_ppa.md`, `conversion_steps/to_structural.md`, `conversion_steps/to_training.md`, `PLAN_*`, `HOWTO_*`, `FUTURE_*`)の記述・実測値を再整理・外挿したものである。数値の一次出典はすべて各節に明記する。外挿・未検証の記述には**[推測]**を付す。
 
 ---
 
@@ -20,7 +20,7 @@ Mythic M2000 SDK上でのAIモデルPPA(Power/Performance/Area)改善に必要�
 
 ## 1. 位置づけ
 
-BEVFormer-TinyとYOLOPXという2モデルのSKU探索([PLAN_bevformer_ppa_exploration.md](PLAN_bevformer_ppa_exploration.md), [PLAN_yolopx_ppa_exploration.md](PLAN_yolopx_ppa_exploration.md))は、それぞれ独立に「`num_aces`をどこに設定すべきか」という問いに答える形で完了している。両探索は互いに正反対の結論(BEVFormerは72 ACEが必須、YOLOPXは48 ACEが最適)に至っており、この対比自体がPPA改善の課題の多くを含んでいる。本ドキュメントはこの2つの探索結果と、SRAM分解手法([02_ppa_estimation.md](02_ppa_estimation.md) §3.9)、全デジタル実行の実測([05_all_digital_ppa.md](05_all_digital_ppa.md))、コンパイラのグラフ書き換え規則([01_compilation.md](01_compilation.md))、on/off-chipマーキング機構([06_to_structural.md](06_to_structural.md))を統合し、以下の3点に答える形で整理する:
+BEVFormer-TinyとYOLOPXという2モデルのSKU探索([PLAN_bevformer_ppa_exploration.md](PLAN_bevformer_ppa_exploration.md), [PLAN_yolopx_ppa_exploration.md](PLAN_yolopx_ppa_exploration.md))は、それぞれ独立に「`num_aces`をどこに設定すべきか」という問いに答える形で完了している。両探索は互いに正反対の結論(BEVFormerは72 ACEが必須、YOLOPXは48 ACEが最適)に至っており、この対比自体がPPA改善の課題の多くを含んでいる。本ドキュメントはこの2つの探索結果と、SRAM分解手法([02_ppa_estimation.md](02_ppa_estimation.md) §3.9)、全デジタル実行の実測([05_all_digital_ppa.md](05_all_digital_ppa.md))、コンパイラのグラフ書き換え規則([01_compilation.md](01_compilation.md))、on/off-chipマーキング機構([to_structural.md](conversion_steps/to_structural.md))を統合し、以下の3点に答える形で整理する:
 
 1. これらのAIモデルのPPA改善に何が必要か。主要な課題は何か(§3)。
 2. レイテンシ改善に適したモデル構造とは何か——SRAM-boundなモデルではSRAMアクセスを減らす構造、ACE-boundなモデルではACE演算数(クロスバー利用率)を減らす構造という、律速要因ごとに異なる2つの問いに分けて答える(§4)。
@@ -249,7 +249,7 @@ SRAM負荷の主因は「並列化のための重み複製」である。§3-2�
 
 - **重み再利用度の高い畳み込みはSRAM往復あたりの計算密度が高く、アナログMMAに適する。** BEVFormerのResNetバックボーンはMAC比率98.3%を占めながらアナログ側で69.4%という比較的高いACE利用率を達成している(出典: [FUTURE_bevformer_inference_run.md](FUTURE_bevformer_inference_run.md)、`PLAN_bevformer_ppa_exploration.md` §2)。1回の重みロードで多数の出力位置を生成する構造(通常の畳み込み)はSRAM再アクセスの相対コストが低い。
 
-- **Depthwise Convは強制的にデジタル(SALU)に落ちる。** `MarkDepthwiseConvsAsDigital`が`group == out_channels`かつ`in_channels/group == 1`の条件を満たすConvに`__digital_onchip`属性を付与し、アナログMMAではなくSALU(デジタル)で処理される(出典: [06_to_structural.md](06_to_structural.md) §8.1)。省パラメータ設計としてよく使われるDepthwise Convは、この意味でオンチップのアナログ処理密度を下げる方向に働く。on-chipでの計算密度を優先するなら、depthwise比率を絞るか、デジタル側で処理される前提でレイテンシ予算を確保する必要がある。
+- **Depthwise Convは強制的にデジタル(SALU)に落ちる。** `MarkDepthwiseConvsAsDigital`が`group == out_channels`かつ`in_channels/group == 1`の条件を満たすConvに`__digital_onchip`属性を付与し、アナログMMAではなくSALU(デジタル)で処理される(出典: [to_structural.md](conversion_steps/to_structural.md) §8.1)。省パラメータ設計としてよく使われるDepthwise Convは、この意味でオンチップのアナログ処理密度を下げる方向に働く。on-chipでの計算密度を優先するなら、depthwise比率を絞るか、デジタル側で処理される前提でレイテンシ予算を確保する必要がある。
 
 - **多視点・多カメラ入力は特徴マップサイズに比例してSRAM負荷を増やす。** BEVFormer(6カメラ、SRAM-bound、26.95ms)とYOLOPX(単一カメラ、ACE-bound、6.83ms)の対比がこれを裏付ける(出典: [02_ppa_estimation.md](02_ppa_estimation.md) §3.9)。カメラ数・解像度・特徴マップ解像度の増加は、SRAM-bound化のリスクを直接高める。
 
@@ -257,7 +257,7 @@ SRAM負荷の主因は「並列化のための重み複製」である。§3-2�
 
   M2000はアナログ重みをクロスバーに常駐させる(weight-stationary)構成のため、推論中にSRAMへ読み書きされるのは主に活性化(入出力の特徴マップ)である。多カメラ入力は同一の重み(共有バックボーン)を用いた推論をカメラ視点数だけ繰り返す構造になるので、SRAM側の累積バイト量は「カメラ数 × 1視点あたりの特徴マップの活性化バイト量」という積で増える。ACE側の演算回数は空間位置と繰り返し数に応じて増えるものの、1回あたりに動くバイト量そのものには鈍感なため、同じ「カメラ数×特徴マップサイズ」の増加に対してSRAM時間の方が先に押し上げられやすい。BEVFormerがYOLOPXよりクロスバー充填率が低い(32.6% vs 49.6%、後述§4.3)という実測は、この非対称性の帰結として整合的に説明できる。
 
-- **Attention/Transformer部分はoff-chip一括処理になりやすい。** BEVFormerの`to_structural`実装はtransformer側サブグラフの全ノードを一括off-chip化する(`everything_off_chip`、出典: [06_to_structural.md](06_to_structural.md) §7.1)。コンパイラ側には`AttentionDetr`等、Attentionを`group=8`のグループ畳み込みへ変換する最適化パスが存在するが(出典: [01_compilation.md](01_compilation.md) §3.1.2(G))、これは計算のマッピング先(アナログMMAへ載せられる表現への変換)を変えるものであり、SRAM往復の絶対量そのものを減らす保証はない**[推測]**——この変換パスがSRAMトラフィックに与える効果は本調査群では実測していない。
+- **Attention/Transformer部分はoff-chip一括処理になりやすい。** BEVFormerの`to_structural`実装はtransformer側サブグラフの全ノードを一括off-chip化する(`everything_off_chip`、出典: [to_structural.md](conversion_steps/to_structural.md) §7.1)。コンパイラ側には`AttentionDetr`等、Attentionを`group=8`のグループ畳み込みへ変換する最適化パスが存在するが(出典: [01_compilation.md](01_compilation.md) §3.1.2(G))、これは計算のマッピング先(アナログMMAへ載せられる表現への変換)を変えるものであり、SRAM往復の絶対量そのものを減らす保証はない**[推測]**——この変換パスがSRAMトラフィックに与える効果は本調査群では実測していない。
 
 - **重み容量の事前計算がSKU選定を高速化する。** YOLOPXのm2024失敗は、コンパイル前に`BCMConv2d`の重み総量を集計するだけで(生重み32.45M vs 容量29.88M=108.6%)、90分超のコンパイル試行なしに予見できた(出典: `PLAN_yolopx_ppa_exploration.md` §3.3)。モデル構造を変更する際は、このパディング込みの重み容量比を先に計算し、目標SKUの容量に収まるかを確認することで、無駄なコンパイル試行を避けられる。
 
@@ -305,7 +305,7 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 
 1. **KVキャッシュ増大によるSRAM/DDRトラフィック増加。** BEVFormerが6カメラ入力でSRAM-bound化した構造(§3-1, §4.2)と同型のリスクが、シーケンス長の増大でも起こりうる**[推測]**。層数・シーケンス長が増えるほど、デジタル側のメモリトラフィックがボトルネックになる可能性が高い。
 
-2. **動的シーケンス長・自己回帰デコードとの整合。** `vnnmap`はdynamic batch非対応で、batch=-1を1に固定する(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §8)。pythia(GPT-NeoX系、SDK内で唯一のLLM相当モデル)の`to_structural`実装は、`use_kv_cache=True`の場合に`fix_sequence_length`/`simplify_inputs`をスキップする分岐を既に持っており(出典: [06_to_structural.md](06_to_structural.md) §7.3)、SDK側にKVキャッシュ運用を想定した仕組みは存在する。しかし自己回帰デコード時にシーケンス長が変化する場合の静的shape要求との整合性、およびそのPPAへの影響は本調査群では未検証。
+2. **動的シーケンス長・自己回帰デコードとの整合。** `vnnmap`はdynamic batch非対応で、batch=-1を1に固定する(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §8)。pythia(GPT-NeoX系、SDK内で唯一のLLM相当モデル)の`to_structural`実装は、`use_kv_cache=True`の場合に`fix_sequence_length`/`simplify_inputs`をスキップする分岐を既に持っており(出典: [to_structural.md](conversion_steps/to_structural.md) §7.3)、SDK側にKVキャッシュ運用を想定した仕組みは存在する。しかし自己回帰デコード時にシーケンス長が変化する場合の静的shape要求との整合性、およびそのPPAへの影響は本調査群では未検証。
 
 3. **既存コンパイラ変換パスの層数スケーラビリティは未実測。** Gemm/MatMul→Conv統一、Attention→`group=8`グループConv、`vidRope`によるRoPE表現、`vidMultiQueryExpand`によるGQA/MQA KV展開(出典: [01_compilation.md](01_compilation.md) §3.1.2(A)(G), §3.1.3)は、コード上は層数に依存しない汎用的な書き換え規則として実装されているが、層数が増えた場合のコンパイル時間・CP-SAT収束性(§3-8で見た通り既存2モデルでも90〜120分・タイムアウトが発生している)がどう変化するかは未検証。層数が数十〜数百に達するLLMでは、コンパイル時間そのものがボトルネックになる可能性がある**[推測]**。
 
@@ -352,7 +352,7 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 - [02_ppa_estimation.md](02_ppa_estimation.md) — PPA推定式・SRAM/ACE分解手法・電力未算入項目
 - [03_accuracy_simulation.md](03_accuracy_simulation.md) — 精度シミュレーションとBCM忠実度モデル
 - [05_all_digital_ppa.md](05_all_digital_ppa.md) — 全デジタル実行の実測、`nMPs`/OCRAMスイープ
-- [06_to_structural.md](06_to_structural.md) — on/off-chipマーキング機構、depthwise conv扱い
+- [to_structural.md](conversion_steps/to_structural.md) — on/off-chipマーキング機構、depthwise conv扱い
 - [PLAN_bevformer_ppa_exploration.md](PLAN_bevformer_ppa_exploration.md) — BEVFormer-Tiny SKU探索(72 ACEが唯一の可行点)
 - [PLAN_yolopx_ppa_exploration.md](PLAN_yolopx_ppa_exploration.md) — YOLOPX SKU探索(48 ACEが最適点)
 - [HOWTO_ppa_exploration_tools.md](HOWTO_ppa_exploration_tools.md) — `mythic-compiler`/`mythic-ppa-estimators`の使い方、既知バグ
