@@ -192,7 +192,7 @@ steps=eval_trained            ← ① ステップ名   (config トップレベ�
 
 ## 4. 処理フローの各ステップ詳細
 
-本章は §3 の図の**内側ボックス（1 つの eval ステップの中身）**を詳述する。§4.1 が全 eval ステップ共通の実行基盤（`Session` → `make_torch_net`）、§4.2〜§4.5 が §3.2 表の各ステップの中身、§4.6 が同じ経路を流用した可視化、§4.7 が標準フロー外の運用（未学習モデルの評価）である。
+本章は §3 の図の**内側ボックス（1 つの eval ステップの中身）**を詳述する。§4.1 が全 eval ステップ共通の実行基盤（`Session` → `make_torch_net`）、§4.2〜§4.5 が §3.2 表の各ステップの中身、§4.6 が同じ経路を流用した可視化、§4.7 が標準フロー外の運用（未学習モデルの評価、およびフル nuScenes val での FP32/ANA8 再実測）である。
 
 ### 4.1 共通の実行基盤 — `Session` と `make_torch_net()`
 
@@ -358,6 +358,38 @@ def __call__(self, value):
 `eval_trained` が統計収集を含まないのは、`eval_onnx_step`（§4.2）が `run_evaluator` を直接呼び `Session._stats` を経由しないため。精度シミュレーションを GPU で回す運用は維持できる。
 
 > 上記実測の成果物（`structural-1600x900.onnx`, `mythic-1600x900-untrained.onnx`, `metrics_untrained.json`, 各ステップのログ）はホスト `/mnt/nvme_scratch/mythic_untrained_probe/` に保存。
+
+#### 4.7.5 フル nuScenes val での再実測（mini との比較）
+
+§4.7.3 は mini_val（2 scenes 81 frames）での実測だった。同じ 3 モデル（FP32 / ANA8 再学習なし / ANA8 再学習後）を、**nuScenes v1.0-trainval のフル val split（150 scenes, 6,019 frames）**で再実測した。データは `s3://s3-srdm/nuScenes/`（`v1.0-trainval01`〜`10_blobs.tgz` 計 10 本、圧縮 315 GB、展開後 395 GB）から取得し、`create_data.py::nuscenes_data_prep(version='v1.0-trainval')` で標準の nuScenes train/val split（`nuscenes.utils.splits`, train 700 / val 150 scenes）に基づく annotation を生成した。
+
+| モデル | 実行環境 | mAP | NDS | 備考 |
+|---|---|---|---|---|
+| **FP32** | CPU（`eval_fp32` → `eval_onnx_model`, onnxruntime） | 0.2009 | 0.2294 | 決定論的（乱数なし、単発確定） |
+| **ANA8 再学習なし**（§4.7 の未学習 Mythic モデル） | GPU（`eval_trained` → `eval_mythic_model`, TorchNet） | **0.0** | 0.0271 | 全クラス `AP_dist_{0.5,1.0,2.0,4.0}` が 0.0 |
+| **ANA8 再学習後**（`bevformer-tiny-1600x900-trained.onnx`） | GPU（同上） | 0.2291 | 0.2551 | 単発実行（noise 起因のばらつきは未計測。mini では 5 run で mAP 0.2162±0.0026, §4.7.3） |
+
+mini_val との対比:
+
+| モデル | mini_val（2 scenes 81 frames） | フル val（150 scenes 6,019 frames） |
+|---|---|---|
+| FP32 | mAP 0.1998 / NDS 0.2029 | mAP 0.2009 / NDS 0.2294 |
+| ANA8 再学習なし | mAP 0.0 / NDS 0.0360 | mAP 0.0 / NDS 0.0271 |
+| ANA8 再学習後 | mAP 0.2162±0.0026 / NDS 0.2149±0.0027（5 run 平均） | mAP 0.2291 / NDS 0.2551（1 run） |
+
+**mini と傾向が一致する**: 再学習なしは mini と同様 mAP 0.0 に崩壊し、再学習後は FP32 と同等〜それを上回る水準まで回復する。§4.7.3 の結論（再学習は精度改善ではなくアナログ実行を成立させる必須工程）はフル val でも変わらない。
+
+**mini とフル val の差**: ANA8 再学習後がフル val では FP32 をわずかに上回っている（mAP 0.2291 vs 0.2009、NDS 0.2551 vs 0.2294）。これは主に (a) mini_val がわずか 2 scenes（データセット全体の特性を代表しない標本）であること、(b) ANA8 再学習後の評価はノイズ由来の run-to-run 変動が mini で ±0.0026（mAP）確認されており、フル val の 1 run 分の値もこの変動範囲内にある可能性、の両方が寄与しうる。フル val 側では再学習後の反復実行によるばらつき測定は行っていないため、この差が系統的なものか変動範囲内かは本実測だけでは判別できない[推測]。
+
+**実行規模の実測値**（`conversion_dataloader.workers_per_gpu=0` 固定、GPU/CPU 実行はそれぞれ排他制御なしで並行実行）:
+
+| 評価 | 環境 | 所要時間 |
+|---|---|---|
+| ANA8 再学習なし | GPU | 約 3.7 時間 |
+| ANA8 再学習後 | GPU（上記の後に自動連鎖実行） | 約 4.6 時間 |
+| FP32 | CPU（上記 2 件と並行実行） | 約 8.3 時間 |
+
+annotation 生成（`nuscenes_data_prep`）自体は 850 scenes 全体の 1 パス目（`_fill_trainval_infos`, 34,149 samples）に約 32 分。2 パス目の `export_2d_annotation`（train/val の 2D box coco.json 生成、画像を毎サンプル読み込む）は本実測の評価ステップに不要（`nuscenes_infos_temporal_val.pkl` のみで完結）なため中断した——CPU 上で ANA8 未学習評価と FP32 評価に加えてこの 3rd プロセスが競合し、FP32 のログ上 ETA が約 9 時間 → 中断後 8.3 時間に短縮した。
 
 ---
 
