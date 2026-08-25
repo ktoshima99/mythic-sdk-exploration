@@ -17,6 +17,8 @@ Mythic M2000（フラッシュ／NVM メモリセルをアナログ乗算器と�
 | 04 | [to_training.md](conversion_steps/to_training.md) | **`to_training` ステップ**（structural→MYTHIC 変換・Mythicノード化・FSR/DSF分解） | 解析済（SDK コンテナ側、6 モデル共通実装 + BEVFormer 実測あり）。後続の `train`（重み学習ループ本体）は未解析 |
 | 05 | [05_all_digital_ppa.md](05_all_digital_ppa.md) | **全デジタル実行時の PPA 推定** | 解析済（Compiler コンテナ側、BEVFormer-Tiny 実測あり。`vnnmap` バイナリ逆アセンブルにより cycle/電力モデルも確定） |
 | 06 | [to_structural.md](conversion_steps/to_structural.md) | **`to_structural` ステップ**（構造整理・on/off-chip 宣言） | 解析済（SDK コンテナ側、6 モデル全実装 + BEVFormer/resnet50 実測あり） |
+| 08 | [to_acm.md](conversion_steps/to_acm.md) | **`to_acm` ステップ**（MYTHIC→BCM 変換・重み量子化の実行・BCM忠実度`munc_fp`固定） | 解析済（SDK コンテナ側、6 モデル共通実装 + YOLOPX/BEVFormer 実artifact実測あり） |
+| 09 | [create_artifact.md](conversion_steps/create_artifact.md) | **`create_artifact` ステップ**（BCM→COMPILER 変換・忠実度`munc_digital`固定・off/on-chip分割・tar.gz packaging） | 解析済（SDK コンテナ側、6 モデル共通実装 + YOLOPX/BEVFormer 実artifact実測あり） |
 
 ### 解析手法
 - **コンパイラコンテナ**: `compiler_m2000.tar`（OCI イメージ）を `docker load` し、`compilerd-bin:1.5.2` から生 Python ソース約 27,000 行を `_extracted_compiler/` に抽出。doc 01/02、および doc 03 Part B はこれに基づく。
@@ -367,7 +369,7 @@ Compiler コンテナに `COMPILER` モデルが渡ると、さらに別系統�
 
 優先度順の候補:
 
-1. **`train` ステップ本体の解析（最優先候補）**: `mythic-model-zoo/*/train.py` 群（pythia/yolopx/huggingface/bevformer, QAT・蒸留・ACM 変換 `convert_training_to_acm_step`）を調査。SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.2`）の `munc` / `mythic-model-zoo` が対象。**前段の `to_structural`（構造整理・on/off-chip 手動宣言, [to_structural.md](conversion_steps/to_structural.md)）と `to_training`（structural→MYTHIC 変換, [to_training.md](conversion_steps/to_training.md)）は解析済み**。未解析は `train.py` 本体（重み学習ループ・QAT・蒸留）のみ。
+1. **`train` ステップ本体の解析（最優先候補）**: `mythic-model-zoo/*/train.py` 群（pythia/yolopx/huggingface/bevformer, QAT・蒸留）を調査。SDK コンテナ（`mythic-sdk-ubuntu-24.04:m2000-v26.05.2`）の `munc` / `mythic-model-zoo` が対象。**`step_order` 上の他ステップは全て解析済み**: `to_structural`（構造整理・on/off-chip 手動宣言, [to_structural.md](conversion_steps/to_structural.md)）、`to_training`（structural→MYTHIC 変換, [to_training.md](conversion_steps/to_training.md)）、`to_acm`（MYTHIC→BCM 変換・重み量子化の実行, [to_acm.md](conversion_steps/to_acm.md)）、`create_artifact`（BCM→COMPILER 変換・tar.gz packaging, [create_artifact.md](conversion_steps/create_artifact.md)）。未解析は `train.py` 本体（重み学習ループ・QAT・蒸留）のみ。
 2. **精度シミュレーションの未解明点の解消**: doc 03 §D に列挙した項目（`hw_model.randomize()` の実パラメータ名、Hydra config の実 YAML、`munc_acm_signoff` バージョン差異の背景等）。`mythic.acm.denali.*` 等の外部参照パッケージの追加解析が必要。
 3. **コンパイラバイナリのさらなる解析**: `vnnmap` / `dnn_compiler` の逆アセンブル・動的トレースによる分割アルゴリズムの推定。
 4. **実行トレースの取得**: 実際にモデルをコンパイル・PPA・精度評価まで実行し、生成される `.vidir` / `.vci` / `perf_trace_dump.h5` / `metrics.json` の実データで各ドキュメントの記述を検証。

@@ -192,6 +192,29 @@ BreakDigitalScalesIntoFactors(break_into_attrs=True),
 - `ScaleAllNodes`（`munc/ops/scale_all_nodes.py`）: グラフをスキャンしてスケーリングノード／打ち消しノードのグルーピングを行う（詳細実装は本解析で未深掘り、§11）。
 - `BreakFSRIntoPFSRAndIFSR`（`munc/ops/break_FSR_into_pFSR_and_iFSR.py:12-24`）: 「ヒューリスティックによりFSRをACEハードウェアスケール因子(WSF・iFSR・pFSR)の集合に分割する。`CSF = (DSF * WSF * pFSR) / iFSR`。重み・バイアス・（必要なら）DSFを更新し、クリッピングを回避する」。**この op が重みを数値的に書き換える**（§7）。
 
+#### 5.4.1 CSF/FSR/WSF/DSFの相互関係 — これは「量子化スケール」そのものである
+
+`CompositeScale`（`MYTHICType.COMPOSITE_SCALE = "CompositeScale"`, `munc/_constants.py:107`）ノードが保持する **CSF（Composite Scale Factor）は、論理的には「このノードに必要な量子化スケール」そのもの**である。通常のソフトウェア量子化（例: 対称INT8量子化の `scale = max(|x|) / 127`）であれば1レイヤー1スケール値で済むが、Mythicのアナログcompute-in-memoryパイプラインには物理的に別々のスケール設定点が複数あるため、CSFはそれらのハードウェアノブの積/商として分解される:
+
+```
+CSF = (DSF * WSF * pFSR) / iFSR
+```
+
+- **WSF**（Weight Scale Factor）: NVMセルへの重み書き込み時のスケール。
+- **iFSR**（input Full Scale Range）: クロスバー入力側の物理スケール[推測: 略称の正式展開は本解析では未確認]。
+- **pFSR**: ADC出力（積和結果）側の物理スケール[推測: "product"側FSRと推定。正式展開は未確認]。
+- **DSF**（Digital Scale Factor）: デジタル側の後段乗数。`MakeDSFsTrainable`（§5.6）が学習可能パラメータとして`train`ステップに引き渡す対象。
+
+この分解が「量子化スケールの計算」であることは、`get_weight_scale`（`munc/_session_tools.py:779-781`）の関数シグネチャに直接現れている:
+
+```python
+def get_weight_scale(weight, bias, use_sigma=False, correct_mean=True, n_sigma=3, pctl=0.997, num_bias_splits=6,
+                     protect_biases=False, protect_filters=False, hw_weight_min=-128, hw_weight_max=127,
+                     use_histogram=False):
+```
+
+`hw_weight_min=-128, hw_weight_max=127` は符号付き8bit整数の表現範囲そのものであり、percentile/sigma/histogramヒューリスティックで「FP32の重みをこの範囲に収めるスケール」を求める処理は、古典的な対称量子化のスケール計算と同一である。**FSR系のハードウェアスケール因子は量子化スケールの実体であり、Mythicのアナログハードウェアが持つ複数の物理スケール設定点（重み書き込み・クロスバー入力・ADC出力・デジタル後段）に対応させて分解されたもの**、と理解して良い。
+
 ### 5.5 Mythicノード変換本体（`_session.py:298-317`）
 
 ```
@@ -261,7 +284,7 @@ DEFAULT_MYTHIC_NODE_MAP = {
 
 ## 7. 「量子化」の実体 — 数値変更されるのはスケールのみ、丸め・ノイズ注入は実行時
 
-[00_overview.md](../00_overview.md) の記述（「MYTHIC = アナログaware再学習可能な量子化グラフ（FSR分解・DSF学習可能化済み）」）を実測で裏付けると、**「量子化」には2つの異なる意味が混在している**ことが分かる:
+[00_overview.md](../00_overview.md) の記述（「MYTHIC = アナログaware再学習可能な量子化グラフ（FSR分解・DSF学習可能化済み）」）を実測で裏付けると、**「量子化」には2つの異なる意味が混在している**ことが分かる（FSR/CSF系のスケール因子そのものが量子化スケールの実体であることは§5.4.1で確認済み）:
 
 1. **スケール因子の数値確定**（`to_training` が実行）: `ConvGemmWeightScaling`（`munc/ops/conv_gemm_weight_scaling.py:6-18`、重み・バイアスをハードウェア対応範囲にスケーリング）と `BreakFSRIntoPFSRAndIFSR`（§5.4）が、Conv/Gemmの重みを**実際にnumpy配列レベルで書き換える**。§10.1 の実測で、変換後もMythicノードの重みinitializerは **float32のまま**（int8化されていない）ことを確認済み。代わりにノード属性として `__pFSR`/`__iFSR`/`__multiplier`/`__shift`/`__activation`/`__activation_clip`/`__trainable_dsf` が付与される（§10.1）。
 2. **8bit power-of-two丸め・アナログノイズ注入**（`to_training` は行わない）: [03_accuracy_simulation.md](../03_accuracy_simulation.md) が詳述する確率的ノイズモデル（`munc_pytorch/noise.py`）や `MythicConv2d` の `nn.Module` 実装（TorchNet化後、forward時にfake-quantを適用）は、ONNXファイルの静的な変換としては存在しない。これらは `train`/`eval_trained` が ONNX を `make_torch_net()`（[03_accuracy_simulation.md](../03_accuracy_simulation.md) §4.1）でPyTorch化した**実行時**に、`__pFSR`/`__iFSR` 等の属性値を読んでforward pass内で適用される。
