@@ -2,7 +2,7 @@
 
 Mythic M2000 SDK上でのAIモデルPPA(Power/Performance/Area)改善に必要な事項と主要な課題を、既存の実測結果を横断的に整理したもの。対象は主に BEVFormer-Tiny([PLAN_bevformer_ppa_exploration.md](PLAN_bevformer_ppa_exploration.md))と YOLOPX([PLAN_yolopx_ppa_exploration.md](PLAN_yolopx_ppa_exploration.md))の2モデルのSKU探索結果、および全デジタル実行の実測([05_all_digital_ppa.md](05_all_digital_ppa.md))。
 
-本ドキュメントは**新規のコード調査・実機実行を行わず**、既存ドキュメント(`00_overview.md`〜`05_all_digital_ppa.md`, `conversion_steps/to_structural.md`, `conversion_steps/to_training.md`, `PLAN_*`, `HOWTO_*`, `FUTURE_*`)の記述・実測値を再整理・外挿したものである。数値の一次出典はすべて各節に明記する。外挿・未検証の記述には**[推測]**を付す。
+本ドキュメントは**新規のコード調査・実機実行を行わず**、既存ドキュメント(`00_overview.md`〜`05_all_digital_ppa.md`, `conversion_steps/to_structural.md`, `conversion_steps/to_training.md`, `PLAN_*`, `HOWTO_*`, `FUTURE_*`)の記述・実測値を再整理・外挿したものである。数値の一次出典はすべて各節に明記する。外挿・未検証の記述には**[推測]**を付す。**例外として§3-10のみ、既存の`_ppa_*.tar.gz`(コンパイル成果物。再コンパイル・funcsim再実行は不要)に対し`power_estimator.py`を新規に実行し、電力のコンポーネント別内訳を実測している(手法・スクリプトは`tools/power_breakdown/power_breakdown.py`、§3-10冒頭参照)。**
 
 ---
 
@@ -229,6 +229,58 @@ BEVFormerの探索は「A_maxが380mm²以上でなければ、現行SDK・現�
 
 **含意**: 「72 ACEが必須」という技術的結論の実効性は、A_maxが確定するまで保留状態にある。A_maxが380mm²未満であれば、モデル側の軽量化(アナログ側処理時間を約24%短縮して48 ACEを救済する)かA_max自体の見直しのいずれかが必須になる(`PLAN_bevformer_ppa_exploration.md` §4結論)。この軽量化の具体的な着手方法は§4で述べる。
 
+### 3-10. 電力のコンポーネント別内訳(新規実測)——電力側の律速もSRAM-bound/ACE-boundの分岐を引き継ぐ
+
+§3-1でレイテンシの律速項がモデルごとにACE-bound/SRAM-boundに分岐することを見た。**同じ分岐が電力側にも表れるか**を、実際に`power_estimator.py`を内部関数レベルで叩いて確認した。
+
+**手法**: `power_estimator.py`の`OpEnergy`は1演算のエネルギーを6成分(`ace_active`/`ace_sleep`/`sram`/`accessor`/`control`/`noc`。出典: [02_ppa_estimation.md](02_ppa_estimation.md) §4.1)に分解して内部で保持しているが、CLIの出力経路(`calc_power()`, [pow:544-602])は演算タイプ(ACE/COPY/SIMD/PAD/INFEED/OUTFEED)ごとの`.total`(J/W)と、最終的な Functional Unit / Interconnect の2値しか表に出さず、6成分の内訳そのものは一切表示されない。そこで`M2000_Power`の`calc_energy_ace()`/`calc_energy_copy()`/`calc_energy_simd()`/`calc_energy_pad()`/`calc_energy_infeed()`/`calc_energy_outfeed()`/`calc_energy_interconnect()`を`calc_power()`を経由せず直接呼び出し、演算タイプ×6成分のクロス集計を取得した(スクリプト: `tools/power_breakdown/power_breakdown.py`)。既存の`_ppa_*.tar.gz`から`final.l0.pb`・`packet_log.json`・`event_log.json`(いずれも`mythic-ppa-estimators --estimate-power`実行時に`artifacts/`配下へ既に保存済み)を取り出すだけで済み、**funcsim・コンパイラいずれの再実行も不要**(コンパイル済みプロトバフの静的パースのみで、1モデルあたり1秒未満)という点は[02_ppa_estimation.md](02_ppa_estimation.md) §3.9(4)の`perf_breakdown.sh`と同じ考え方である。
+
+**副次的に確認したバグ**: `calc_energy_interconnect()`([pow:441-482])は`packet_log_path`を渡さない(`self.packet_log=None`のまま)と`for key, value in self.packet_log.items()`で`AttributeError: 'NoneType' object has no attribute 'items'`を投げてクラッシュする実行時エラーを確認した。[02_ppa_estimation.md](02_ppa_estimation.md) §4.7で「推測」としていた`hasattr(self,"packet_log")`が常に`True`になる(dataclassフィールドのため未提供時もNoneとして存在する)という不具合は、憶測ではなく実際に起きる不具合であることが確定した。回避策は`packet_log_path`/`event_log_path`を必ず渡すことで、`mythic-ppa-estimators`の通常実行では両ファイルとも`artifacts/ppa/`に既に生成されているため実務上の支障はない。
+
+**BEVFormer-Tiny(m2072, 72 ACE, 30fps)の内訳**(出典tar.gz: `bevformer_m2072_high_2605_2_ppa_2026_07_27_12_43_57.tar.gz`。合計3.2873Wは`PLAN_bevformer_ppa_exploration.md`記載の公表値analog 3.287Wと一致し、手法の正当性を確認済み):
+
+| 演算タイプ | ACE active | ACE sleep | SRAM | Accessor | Control | NOC | Total |
+|---|---|---|---|---|---|---|---|
+| ACE(mma_dot) | 1.52226 W | 0.08371 W | 0.09829 W | 0.18604 W | 0.03293 W | 0 | 1.92323 W |
+| COPY | 0 | 0 | 0.20310 W | 0.27261 W | 0.02281 W | 0 | 0.49852 W |
+| INFEED/OUTFEED/SIMD/PAD | 0 | 0 | 0.00051 W | 0.00064 W | 0.00006 W | 0 | 0.00122 W |
+| **合計(Functional Unit)** | **1.52226** | **0.08371** | **0.30191** | **0.45929** | **0.05580** | 0 | **2.42297 W** |
+| Interconnect(NOC、packet log由来) | — | — | — | — | — | 0.8643 W | 0.8643 W |
+| **総電力** | | | | | | | **3.2873 W** |
+
+比率で見ると: ACE(active+sleep)48.9%、Interconnect(NOC)**26.3%**、Accessor 14.0%、SRAM 9.2%、Control 1.7%。**Interconnect単体がSRAM+Accessor+Control(24.9%)を上回り、ACEに次ぐ第2位の電力消費源になっている**。また非ACE演算である**COPY**単体(0.499W)は、ACE演算に伴う非ACE(digital)成分の合計(SRAM+Accessor+Control+ACE sleep=0.402W)より大きく、クロスバー計算そのものではなくデータの複写・整形が無視できない電力を占めることを示している。
+
+**YOLOPX(48 ACE / 72 ACE, 30fps)との対比**(出典tar.gz: `yolopx_m2048_high_..._2026_07_31_08_11_04.tar.gz` / `yolopx_m2072_high_..._2026_07_31_10_07_06.tar.gz`。合計0.7404W/0.8270Wは`PLAN_yolopx_ppa_exploration.md` §4.1-4.2記載の公表値0.740W/0.827Wと一致):
+
+| SKU | ACE% | SRAM% | Accessor% | Control% | Interconnect(NOC)% |
+|---|---|---|---|---|---|
+| YOLOPX m2048(ACE-bound) | **61.7%** | 6.2% | 10.4% | 1.6% | 20.1% |
+| YOLOPX m2072(ACE-bound) | **62.9%** | 6.0% | 9.9% | 1.5% | 19.7% |
+| BEVFormer m2072(SRAM-bound) | **48.9%** | **9.2%** | **14.0%** | 1.7% | **26.3%** |
+
+**含意**: §3-1で確認したレイテンシ側の律速の分岐(YOLOPX=ACE-bound、BEVFormer=SRAM-bound)は、電力側にも同じ方向の非対称として表れる。ACE-boundなYOLOPXは電力の6割超がACEそのものに集中する一方、SRAM-boundなBEVFormerはACE比率が5割を切り、SRAM・Accessor・Interconnectという「データ移動」側3成分の合計(30.9%)がYOLOPXの2モデル(18.2%/17.4%)より明確に大きい。レイテンシ側の律速判定(`perf_breakdown.sh`、§4.1)は、電力側の主要な改善対象(ACE電流そのものか、データ移動経路か)を判定する上でもそのまま使える指標になっている。
+
+#### 3-10.1 §3-2の補足: num_aces増加によるpower悪化の主因はSRAM複製ではなくACEスリープ電力(実測で判明)
+
+§3-2はYOLOPXの48→72 ACE実測から「重み複製→SRAMトラフィック増→power増」という機構を示した。今回の内訳分解で、この機構がpower増加(+11.6%、0.743→0.829W)にどの程度寄与しているかを定量化できる。
+
+YOLOPX 48→72での演算タイプ別差分:
+
+| 成分 | 48 ACE | 72 ACE | 差分 | 全体差分(+0.0724W)に対する比率 |
+|---|---|---|---|---|
+| ACE active | 0.35031 W | 0.35031 W | **±0(完全一致)** | 0% |
+| ACE sleep | 0.10626 W | 0.16988 W | **+0.0636 W** | **87.8%** |
+| SRAM(ACE+COPY等合計) | 0.04595 W | 0.05001 W | +0.0041 W | 5.6% |
+| Accessor(同上) | 0.07708 W | 0.08155 W | +0.0045 W | 6.2% |
+| Control(同上) | 0.01184 W | 0.01204 W | +0.0002 W | 0.3% |
+| **Functional Unit合計** | 0.5914 W | 0.6638 W | **+0.0724 W** | 100% |
+
+**ACE activeエネルギーは48→72 ACEで完全に一致する**(総ACE演算回数1,649,376・総MAC数285,021,216,768が両SKUで一致するため、1回あたりの活性化エネルギーも変わらない)。増加分の**88%はACE sleepが占め、SRAM/Accessor/Controlの増加(§3-2が説明した重み複製由来のSRAMトラフィック増)は合計で12%にとどまる**。
+
+メカニズム: `calc_energy_ace()`内の`needed_sleep_time = num_aces / inf_rate - total_time`([pow:346])で、`total_time`(実際にACE演算に使われた時間)はACE演算回数×160ns×`n_iterations`で決まりnum_acesに依存しない。一方`num_aces / inf_rate`(1推論周期あたりの「全ACEの延べ利用可能時間」)はnum_acesに比例して増える。したがって**num_acesを増やすほど「稼働していないACEを維持する時間」がほぼ線形に増加し、そのアイドル時間をsnooze/sleep電流(§2の`i_adc_core_inactive`等)で満たす分がFunctional Unit電力増加の大部分を占める**。これは§3-2が説明した重み複製によるSRAM/Accessorトラフィック増とは独立した、第2の(かつYOLOPXの実測では支配的な)power増加メカニズムである。
+
+**含意**: 「num_aces増設→area↔SRAM↔powerが結合する」という§3-2の結論自体は覆らないが、**SKU選定時にpowerコストを見積もる際は、SRAM/Accessorトラフィックよりもむしろ「使われないACEの待機電力」の方が支配的な項になりうる**点を踏まえる必要がある。この待機電力は演算タイプ別に見ればモデル構造に依存しない(`i_adc_core_inactive`等はモデル非依存の物理定数、[02_ppa_estimation.md](02_ppa_estimation.md) §4.4)ため、「num_acesを1増やすごとに一定のアイドルタックスが乗る」という関係は他モデルにも一般化できると推測される**[推測]**(実測はYOLOPX 48→72の1点のみ)。BEVFormer側は48 ACEが不可行(§3-9)のため、同型の48→72比較は取得できていない。
+
 ---
 
 ## 4. 律速要因別に見たモデル構造の指針
@@ -337,6 +389,8 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 | デジタル側PPA推定は全体的に未成熟(3-7.1) | キャリブレーション・効率計算・フルグラフ実行の粗さを踏まえ数値を額面通りに使わない | — |
 | コンパイラ非決定性・既知バグ(3-8) | 重み容量の事前計算でコンパイル試行を減らす(4.2) | — |
 | A_max未確定(3-9) | モデル軽量化(約24%短縮目標)かA_max見直しの二択 | — |
+| 電力もSRAM-bound/ACE-boundの分岐を引き継ぐ(3-10) | 律速判定(4.1)が電力側の改善対象判定にも使える | `tools/power_breakdown/power_breakdown.py` |
+| num_aces↑によるpower悪化はACEスリープが主因(3-10.1) | SKU選定時のpower見積りはACE待機電力を優先して評価 | — |
 | depthwise Convは強制デジタル化 | on-chip密度を優先する場合は比率を絞る(4.2) | `MarkDepthwiseConvsAsDigital` |
 | 多カメラ・多視点入力はSRAM負荷増(4.2) | 特徴マップ解像度・カメラ数に注意 | — |
 | Attentionはoff-chip一括処理になりやすい(4.2) | grouped Conv変換の効果は未実測 | `AttentionDetr`等のRewriteRule |
@@ -356,4 +410,5 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 - [PLAN_bevformer_ppa_exploration.md](PLAN_bevformer_ppa_exploration.md) — BEVFormer-Tiny SKU探索(72 ACEが唯一の可行点)
 - [PLAN_yolopx_ppa_exploration.md](PLAN_yolopx_ppa_exploration.md) — YOLOPX SKU探索(48 ACEが最適点)
 - [HOWTO_ppa_exploration_tools.md](HOWTO_ppa_exploration_tools.md) — `mythic-compiler`/`mythic-ppa-estimators`の使い方、既知バグ
+- `tools/power_breakdown/power_breakdown.py` — §3-10で使用した電力コンポーネント別内訳の抽出スクリプト(`_ppa_*.tar.gz`のみで再実行可能、funcsim不要)
 - [FUTURE_bevformer_inference_run.md](FUTURE_bevformer_inference_run.md) — アナログ/デジタル演算振り分けの実測(MAC比率 vs 処理時間比率)
