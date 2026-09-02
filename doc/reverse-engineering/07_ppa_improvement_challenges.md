@@ -240,6 +240,12 @@ BEVFormerの探索は「A_maxが380mm²以上でなければ、現行SDK・現�
 
 **手法**: `power_estimator.py`の`OpEnergy`は1演算のエネルギーを6成分(`ace_active`/`ace_sleep`/`sram`/`accessor`/`control`/`noc`。出典: [02_ppa_estimation.md](02_ppa_estimation.md) §4.1)に分解して内部で保持しているが、CLIの出力経路(`calc_power()`, [pow:544-602])は演算タイプ(ACE/COPY/SIMD/PAD/INFEED/OUTFEED)ごとの`.total`(J/W)と、最終的な Functional Unit / Interconnect の2値しか表に出さず、6成分の内訳そのものは一切表示されない。そこで`M2000_Power`の`calc_energy_ace()`/`calc_energy_copy()`/`calc_energy_simd()`/`calc_energy_pad()`/`calc_energy_infeed()`/`calc_energy_outfeed()`/`calc_energy_interconnect()`を`calc_power()`を経由せず直接呼び出し、演算タイプ×6成分のクロス集計を取得した(スクリプト: `tools/power_breakdown/power_breakdown.py`)。既存の`_ppa_*.tar.gz`から`final.l0.pb`・`packet_log.json`・`event_log.json`(いずれも`mythic-ppa-estimators --estimate-power`実行時に`artifacts/`配下へ既に保存済み)を取り出すだけで済み、**funcsim・コンパイラいずれの再実行も不要**(コンパイル済みプロトバフの静的パースのみで、1モデルあたり1秒未満)という点は[02_ppa_estimation.md](02_ppa_estimation.md) §3.9(4)の`perf_breakdown.sh`と同じ考え方である。
 
+**Accessor/Control/NOCの定義(出典: [02_ppa_estimation.md](02_ppa_estimation.md) §4.1-4.3, §4.6-4.7)**:
+
+- **Accessor**: データそのもの(SRAM成分)ではなく、データ転送を発行・管理する周辺ロジックのコスト。136バイトの転送ディスクリプタ処理+バイト数比例の処理コストからなる(`calc_accessor_energy`, [pow:181-191])。
+- **Control**: 演算の順序制御・同期のコスト。データフロー実行モデルの依存関係通知トークン(8バイト×read-modify-write)の更新と、反復カーネルの進行を追跡するオペレーションカウンタ(96/24バイト)の読み書きからなる(`calc_operation_energy`, [pow:170-178])。この成分の`n_iterations`は`get_num_op_control_iterations = ceil(iter/4)`という**コード自身が「コンパイラに未実装」と明記する暫定式**([pow:161])で計算されており、他成分より不確実性が高い。
+- **NOC**: **名前が同じ2つの別物が存在する点に注意。** `OpEnergy`の6成分の1つとしての`noc`(演算内NOC)は、ACE/COPY/SIMD/PAD/INFEED/OUTFEEDの全`calc_energy_*`関数で**常に0**(`# TODO - ADD NOC ENERGY`という未実装コメントが残っている、[pow:343]等)。以下の表で報告する「Interconnect(NOC)」は、これとは全く別の`calc_energy_interconnect()`([pow:441-482])が、演算ではなくpacket log(タイル間通信の実行トレースJSON)のバイト転送量から独立に計算する値であり、packet log未提供時は無条件に0を返す。
+
 **副次的に確認したバグ**: `calc_energy_interconnect()`([pow:441-482])は`packet_log_path`を渡さない(`self.packet_log=None`のまま)と`for key, value in self.packet_log.items()`で`AttributeError: 'NoneType' object has no attribute 'items'`を投げてクラッシュする実行時エラーを確認した。[02_ppa_estimation.md](02_ppa_estimation.md) §4.7で「推測」としていた`hasattr(self,"packet_log")`が常に`True`になる(dataclassフィールドのため未提供時もNoneとして存在する)という不具合は、憶測ではなく実際に起きる不具合であることが確定した。回避策は`packet_log_path`/`event_log_path`を必ず渡すことで、`mythic-ppa-estimators`の通常実行では両ファイルとも`artifacts/ppa/`に既に生成されているため実務上の支障はない。
 
 **BEVFormer-Tiny(m2072, 72 ACE, 30fps)の内訳**(出典tar.gz: `bevformer_m2072_high_2605_2_ppa_2026_07_27_12_43_57.tar.gz`。合計3.2873Wは`PLAN_bevformer_ppa_exploration.md`記載の公表値analog 3.287Wと一致し、手法の正当性を確認済み):
@@ -263,7 +269,7 @@ BEVFormerの探索は「A_maxが380mm²以上でなければ、現行SDK・現�
 | YOLOPX m2072(ACE-bound) | **62.9%** | 6.0% | 9.9% | 1.5% | 19.7% |
 | BEVFormer m2072(SRAM-bound) | **48.9%** | **9.2%** | **14.0%** | 1.7% | **26.3%** |
 
-**含意**: §3-1で確認したレイテンシ側の律速の分岐(YOLOPX=ACE-bound、BEVFormer=SRAM-bound)は、電力側にも同じ方向の非対称として表れる。ACE-boundなYOLOPXは電力の6割超がACEそのものに集中する一方、SRAM-boundなBEVFormerはACE比率が5割を切り、SRAM・Accessor・Interconnectという「データ移動」側3成分の合計(30.9%)がYOLOPXの2モデル(18.2%/17.4%)より明確に大きい。レイテンシ側の律速判定(`perf_breakdown.sh`、§4.1)は、電力側の主要な改善対象(ACE電流そのものか、データ移動経路か)を判定する上でもそのまま使える指標になっている。
+**含意**: §3-1で確認したレイテンシ側の律速の分岐(YOLOPX=ACE-bound、BEVFormer=SRAM-bound)は、電力側にも同じ方向の非対称として表れる。ACE-boundなYOLOPXは電力の6割超がACEそのものに集中する一方、SRAM-boundなBEVFormerはACE比率が5割を切り、SRAM・Accessor・Controlという「データ移動+制御」側3成分の合計(24.9%)がYOLOPXの2モデル(18.2%/17.4%)より明確に大きい。Interconnect(NOC)まで含めれば差はさらに拡大する(非ACE成分の合計はBEVFormer 51.1% vs YOLOPX 38.3%/37.1%)。レイテンシ側の律速判定(`perf_breakdown.sh`、§4.1)は、電力側の主要な改善対象(ACE電流そのものか、データ移動経路か)を判定する上でもそのまま使える指標になっている。
 
 #### 3-10.1 §3-2の補足: num_aces増加によるpower悪化の主因はSRAM複製ではなくACEスリープ電力(実測で判明)
 
