@@ -447,9 +447,10 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 
 | モデル | 領域 | 改善指針 | 出典 |
 |---|---|---|---|
-| BEVFormer(SRAM-bound) | アナログ・レイテンシ/電力 | 重み再利用度の高い畳み込みを優先、depthwise比率抑制、多視点入力の特徴マップサイズを抑える、Attention/Transformer部分のSRAM往復量削減(grouped conv変換の効果は未実測)。レイテンシ・電力の両方に効く最優先レバー | §4.2 |
+| BEVFormer(SRAM-bound) | アナログ・レイテンシ/電力 | **対象はResNet-50バックボーンのみ**(現状Transformer部分はアナログでは一切処理されない、下記デジタル行参照)。重み再利用度の高い畳み込みを優先、depthwise比率抑制、多視点入力の特徴マップサイズを抑える。レイテンシ・電力の両方に効く最優先レバー | §4.2 |
 | BEVFormer | アナログ・電力(補助レバー) | クロスバー充填率向上(§4.3)はACE active電力を独立に削減できる(僅差の48.9%を占める項)が、SRAM-boundである限りレイテンシには効果がない | §4.3, §3-10.1 |
-| BEVFormer | デジタル・レイテンシ/電力 | Attention/Deformable Attention/GridSample/Reshapeの計算密度改善(MACアレイに適した表現への変換、または発行回数の削減)。OCRAM/DDR容量調整は効果が薄い | §3-11, §5.1 |
+| BEVFormer | アナログ・将来の可能性(未確認) | `AttentionDetr`等、Attentionを`group=8`のグループConvへ変換しアナログMMAに載せる最適化パスがコンパイラに存在するが、**BEVFormerの現状実装(`everything_off_chip`)で実際に適用されるか、SRAM往復を減らす効果があるかは未実測**。上記2行(現状のアナログレバー)とは別カテゴリの話である点に注意 | §4.2, [推測] |
+| BEVFormer | デジタル・レイテンシ/電力 | Transformer部分(Attention/Deformable Attention/GridSample/Reshape)の計算密度改善(MACアレイに適した表現への変換、または発行回数の削減)。OCRAM/DDR容量調整は効果が薄い | §3-11, §5.1 |
 | BEVFormer | 面積・SKU | 48 ACEを可行にするモデル軽量化(アナログ処理時間を約24%短縮)で、72 ACE固定によるACE sleep待機電力コストを削減できる可能性 | §3-9, §3-10.1 |
 | YOLOPX(ACE-bound) | アナログ・レイテンシ | クロスバー充填率の維持・向上(1280×272に適合するチャネル形状、過剰なタイル分割の回避)。MAC数削減は充填率維持が前提 | §4.3 |
 | YOLOPX | アナログ・電力 | SKU選定時はSRAM/Accessorトラフィックよりも「ACE待機電力」を優先して評価する | §3-10.1 |
