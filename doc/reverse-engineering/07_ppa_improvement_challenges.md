@@ -2,7 +2,7 @@
 
 Mythic M2000 SDK上でのAIモデルPPA(Power/Performance/Area)改善に必要な事項と主要な課題を、既存の実測結果を横断的に整理したもの。対象は主に BEVFormer-Tiny([PLAN_bevformer_ppa_exploration.md](PLAN_bevformer_ppa_exploration.md))と YOLOPX([PLAN_yolopx_ppa_exploration.md](PLAN_yolopx_ppa_exploration.md))の2モデルのSKU探索結果、および全デジタル実行の実測([05_all_digital_ppa.md](05_all_digital_ppa.md))。
 
-本ドキュメントは**新規のコード調査・実機実行を行わず**、既存ドキュメント(`00_overview.md`〜`05_all_digital_ppa.md`, `conversion_steps/to_structural.md`, `conversion_steps/to_training.md`, `PLAN_*`, `HOWTO_*`, `FUTURE_*`)の記述・実測値を再整理・外挿したものである。数値の一次出典はすべて各節に明記する。外挿・未検証の記述には**[推測]**を付す。**例外として§3-10のみ、既存の`_ppa_*.tar.gz`(コンパイル成果物。再コンパイル・funcsim再実行は不要)に対し`power_estimator.py`を新規に実行し、電力のコンポーネント別内訳を実測している(手法・スクリプトは`tools/power_breakdown/power_breakdown.py`、§3-10冒頭参照)。**
+本ドキュメントは**新規のコード調査・実機実行を行わず**、既存ドキュメント(`00_overview.md`〜`05_all_digital_ppa.md`, `conversion_steps/to_structural.md`, `conversion_steps/to_training.md`, `PLAN_*`, `HOWTO_*`, `FUTURE_*`)の記述・実測値を再整理・外挿したものである。数値の一次出典はすべて各節に明記する。外挿・未検証の記述には**[推測]**を付す。**例外として§3-10は、既存の`_ppa_*.tar.gz`(コンパイル成果物。再コンパイル・funcsim再実行は不要)に対し`power_estimator.py`を新規に実行し、電力のコンポーネント別内訳を実測している(手法・スクリプトは`tools/power_breakdown/power_breakdown.py`、§3-10冒頭参照)。§3-11・§4.3の一部・§6は、[06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md)で実施した新規のブラックボックス実測(既存コンテナでの`vnnmap`直接実行・ONNXグラフ静的解析。逆アセンブル不使用)を要約したものであり、詳細な手法・生データは同ドキュメントを参照。**
 
 ---
 
@@ -13,8 +13,9 @@ Mythic M2000 SDK上でのAIモデルPPA(Power/Performance/Area)改善に必要�
 - [3. 主要課題](#3-主要課題)
 - [4. 律速要因別に見たモデル構造の指針](#4-律速要因別に見たモデル構造の指針)
 - [5. LLM/VLA等、将来の多層Transformerモデルへの課題](#5-llmvla等将来の多層transformerモデルへの課題)
-- [6. まとめ表](#6-まとめ表)
-- [7. 参照](#7-参照)
+- [6. モデル別ボトルネック総括(BEVFormer/YOLOPX)](#6-モデル別ボトルネック総括bevformeryolopx)
+- [7. まとめ表](#7-まとめ表)
+- [8. 参照](#8-参照)
 
 ---
 
@@ -158,7 +159,11 @@ BEVFormer-Tinyの Digital Estimated Frame Processing は48 ACE・72 ACEで完全
 
 **含意**: デジタル側の演算(Transformerエンコーダ/デコーダ、検出ヘッド)はMAC比率では1.7%だが処理時間比率では14.5%を占める(出典: [FUTURE_bevformer_inference_run.md](FUTURE_bevformer_inference_run.md))。この4.63msはSKU選定やアナログ側の最適化では一切削れない固定コストであり、全体レイテンシ予算(33ms)のうち常に一定の割合を占有する。Transformer比重がモデル設計上で増えるほど、この固定フロアの絶対値そのものが増えると推測される([推測]。実測はBEVFormer-Tiny 1点のみで、Transformer層数を変えたスケーリング実測は行っていない)。
 
+この4.63ms自体の内部ボトルネック(サイクル内訳・電力内訳)は§3-11で扱う。[05_all_digital_ppa.md](05_all_digital_ppa.md) §3-4が明らかにした「デジタル実行はメモリ帯域が支配的」という結論は、backboneを含む全デジタル評価から得られたものであり、この4.63ms(Transformer部分のみ)にはそのまま当てはまらない点に注意。
+
 ### 3-4. デジタル側はメモリ帯域ボトルネックであり、MAC数を増やすと悪化しうる
+
+**本節はResNet-50バックボーンを含むフルグラフを全デジタル実行した場合の結論であり、実際のハイブリッド構成でデジタル実行される範囲(Transformer部分のみ)には別のボトルネックが確認されている(§3-11)。**
 
 BEVFormerフルグラフを全デジタル実行した`nMPs`スイープ(2GHz固定):
 
@@ -281,6 +286,16 @@ YOLOPX 48→72での演算タイプ別差分:
 
 **含意**: 「num_aces増設→area↔SRAM↔powerが結合する」という§3-2の結論自体は覆らないが、**SKU選定時にpowerコストを見積もる際は、SRAM/Accessorトラフィックよりもむしろ「使われないACEの待機電力」の方が支配的な項になりうる**点を踏まえる必要がある。この待機電力は演算タイプ別に見ればモデル構造に依存しない(`i_adc_core_inactive`等はモデル非依存の物理定数、[02_ppa_estimation.md](02_ppa_estimation.md) §4.4)ため、「num_acesを1増やすごとに一定のアイドルタックスが乗る」という関係は他モデルにも一般化できると推測される**[推測]**(実測はYOLOPX 48→72の1点のみ)。BEVFormer側は48 ACEが不可行(§3-9)のため、同型の48→72比較は取得できていない。
 
+### 3-11. 実ハイブリッド構成のデジタル側ボトルネックは、全デジタル評価(§3-4)の結論と異なる(新規実測)
+
+§3-4は「デジタル実行はメモリ帯域が支配的」と結論したが、これはResNet-50バックボーンを含む**全デジタル仮想シナリオ**からの結論である。実際のハイブリッド構成(BEVFormer m2072)でデジタル実行されるのはTransformer部分のみ(MACs 16.5 bn、モデルサイズ13.6 MB——全デジタル評価の54.7分の1の規模)であり、このボトルネックが同じかどうかを既存コンテナでの`vnnmap`直接実行(ブラックボックス、逆アセンブル不使用)で確認した。詳細な手法・生データは[06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md) §2参照。
+
+**レイテンシ側**: サイクル内訳はMAC 71.1%・non-MAC 17.2%・exposed DMA 11.7%(既定cfg実測)。**exposed DMAは支配的ではない**(全デジタル評価の40.8%と対照的)。支配的なのは「MAC cyclesが71.1%を占めながらMAC利用率が9.69%しかない」という組み合わせで、Attention/GridSample/Reshapeのような計算密度の低い演算が、実際の仕事量に対して不釣り合いに多くのサイクルを消費していると考えられる(§5.1のMAC利用率9.69%という既知の事実と同一の現象)。
+
+**電力側**: `pow*Pj`係数を1グループずつゼロにする分離実測(手法は§5.1で述れた「1係数だけを変えて差分を見る」)により、DDRの寄与は18.4%に過ぎず**支配的ではない**ことを確認した(全デジタル評価ではOCRAM拡張で28.6%の電力削減が確認されている、§3-4)。支配的なのはDMEM/IMEM(ローカルメモリアクセス、34.7%)とNon-MAC unit(28.3%)で、合わせて63.0%を占める。
+
+**含意**: §3-4・§4.2で「デジタル側の改善にはメモリ帯域(DDR/OCRAM)対策が効く」という結論を、実ハイブリッド構成のデジタル部分(4.63ms/1.245 W、§3-3)にそのまま適用してはならない。この部分の改善に有効なのは、§5.1で述べたAttention系演算の計算密度改善(計算密度の低い演算の発行回数・ローカルメモリアクセス回数を減らす構造変更)であり、OCRAM/DDR容量の調整ではない。全デジタル評価(§3-4)と実ハイブリッドのデジタル部分(本節)で、同じ「デジタル実行」という括りの中でもボトルネックの性質が完全に異なる、という点が本節の主要な発見である。
+
 ---
 
 ## 4. 律速要因別に見たモデル構造の指針
@@ -299,7 +314,7 @@ SRAM負荷の主因は「並列化のための重み複製」である。§3-2�
 
 具体的な指針(既存実測からの含意):
 
-- **重み再利用度の高い畳み込みはSRAM往復あたりの計算密度が高く、アナログMMAに適する。** BEVFormerのResNetバックボーンはMAC比率98.3%を占めながらアナログ側で69.4%という比較的高いACE利用率を達成している(出典: [FUTURE_bevformer_inference_run.md](FUTURE_bevformer_inference_run.md)、`PLAN_bevformer_ppa_exploration.md` §2)。1回の重みロードで多数の出力位置を生成する構造(通常の畳み込み)はSRAM再アクセスの相対コストが低い。
+- **重み再利用度の高い畳み込みはSRAM往復あたりの計算密度が高く、アナログMMAに適する。** BEVFormerのResNet-50バックボーン(出典: [06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md) §3.2、ONNXグラフのノード命名から確認)はMAC比率98.3%を占めながらアナログ側で69.4%という比較的高いACE利用率を達成している(出典: [FUTURE_bevformer_inference_run.md](FUTURE_bevformer_inference_run.md)、`PLAN_bevformer_ppa_exploration.md` §2)。1回の重みロードで多数の出力位置を生成する構造(通常の畳み込み)はSRAM再アクセスの相対コストが低い。
 
 - **Depthwise Convは強制的にデジタル(SALU)に落ちる。** `MarkDepthwiseConvsAsDigital`が`group == out_channels`かつ`in_channels/group == 1`の条件を満たすConvに`__digital_onchip`属性を付与し、アナログMMAではなくSALU(デジタル)で処理される(出典: [to_structural.md](conversion_steps/to_structural.md) §8.1)。省パラメータ設計としてよく使われるDepthwise Convは、この意味でオンチップのアナログ処理密度を下げる方向に働く。on-chipでの計算密度を優先するなら、depthwise比率を絞るか、デジタル側で処理される前提でレイテンシ予算を確保する必要がある。
 
@@ -330,11 +345,15 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 
 - **1回のドット積で1280入力×272出力を余さず使う層形状を優先する。** チャネル数がACEクロスバーの入出力次元(1280/272)に対して極端に少ない層(例: 初期層の低チャネルConv、depthwise系の1入力チャネル畳み込み)は、クロスバーの大部分が空いたままACE演算1回を消費するため充填率を下げる**[推測]**。チャネル数をクロスバー次元の倍数に近づける、または層を融合してより大きな行列積にまとめる設計が、同じMAC数でもACE演算回数(=timesteps)を減らす方向に働くと推測される。
 
+  **ONNXグラフの実解析による補足**(出典: [06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md) §3、逆アセンブル不使用): 「in_C<1280かつout_C<272」の小さすぎる層の比率は、YOLOPX(E-ELAN backbone、後述)89.5–90.3%に対しBEVFormer(ResNet-50 backbone)55.4–58.2%で、**小チャネル層の比率自体は直感(充填率が低いYOLOPXの方が高いはず)と逆**である。一方「out_C>272」(列方向の分割が必要になる層)の比率はBEVFormer 40.0%・YOLOPX 9.9%で、BEVFormerのResNet-50 BottleneckがもつC=1024/2048等(いずれも272の倍数ではない)のような大チャネル1x1 convが、列分割時の余りブロックによる不完全充填を通じて充填率を下げている可能性が高いと考えられる**[推測、部分的な説明にとどまる]**。ONNX計算のMAC総量が既知の実測値(ACE MACs)より23〜40%小さく一致しないという未解決の不整合があるため、この説明は確証ではない。詳細は[06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md) §3.5-3.6参照。
+
 - **タイル分割・パーティションの粒度がACE演算回数に影響する。** `auto_partition`(コンパイラ内部)はSRAMサイズ制約に応じて演算を複数パーティションに分割する(出典: [01_compilation.md](01_compilation.md) §3.3.1、[00_overview.md](00_overview.md) §3.5)。1層が過剰に分割されるほどACE演算(ドット積発行)の回数が増え、1回あたりの充填率が下がりうる**[推測]**。層の重み・活性化サイズをタイル容量(1タイル=4,980,736重み)に対して過度に大きくしない設計が、不要な分割を避ける方向に働く。
 
 - **総MAC数の削減は充填率が保たれる場合にのみACEクリティカルパス短縮に直結する。** ACE-boundなモデルでMAC数を減らしても、1回あたりの充填率が同時に下がれば`timesteps`数(=ACE演算回数)は減らない。したがって層のチャネル数・カーネル形状を削減する際は、削減後もクロスバー充填率が維持されるか(充填率がすでに低い層を優先して削るか、単純に全層を均等に縮小するか)を区別する必要がある**[推測]**。本調査群ではMAC数削減が充填率に与える影響そのものは実測していない。
 
 - **SRAM-boundなモデルへの適用時は優先度が下がる。** BEVFormerのように既にSRAM側が律速している場合、ACE充填率を上げてもレイテンシは改善しない(§3-1)。この指針はACE-boundなモデル、またはSKU変更(ACE増設)でSRAM-boundからACE-boundに転換する場合に限って有効になる。
+
+- **参考: 両モデルのbackboneアーキテクチャの実体(ONNXグラフから確認)。** BEVFormer-Tinyのbackboneは**ResNet-50**(Bottleneckブロックのノード命名から確認)、YOLOPXのbackboneは**YOLOv7系のE-ELAN(Extended-ELAN)**+**YOLOX式decoupled anchor-freeヘッド**である(モデル名「YOLOP+X」はこの構成をそのまま反映している)。両モデルともdepthwise/grouped convは未使用(全Conv層でgroup=1)。出典・詳細な層別チャネル分布は[06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md) §3.2-3.3。
 
 ---
 
@@ -375,7 +394,61 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 
 ---
 
-## 6. まとめ表
+## 6. モデル別ボトルネック総括(BEVFormer/YOLOPX)
+
+本節は§3-§5の実測を、モデル×領域(レイテンシ/電力)×実行系統(アナログ/デジタル)で整理し、ボトルネックの構造的理由と改善指針を集約する。デジタル側の内訳は[06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md)の新規実測(逆アセンブル不使用)による。
+
+### 6.1 レイテンシ
+
+**BEVFormer-Tiny(m2072, 72 ACE)**
+
+| 系統 | 実測値 | 内訳 | ボトルネック | 構造的理由 |
+|---|---|---|---|---|
+| アナログ | 26.95 ms(総latencyの支配項) | ACEクリティカルパス23.37 ms / SRAM時間26.95 ms(max、§3-1) | **SRAM-bound** | 6カメラ入力によるSRAM累積負荷(§4.2)。ResNet-50 backboneのクロスバー充填率32.6%(§4.3)。out_C>272の層が40%を占め列分割の余りロスが生じている可能性(06§3.6、**[推測]・部分説明**) |
+| デジタル(Transformer部分) | 4.63 ms(固定フロア、§3-3) | MAC cycles 71.1% / non-MAC 17.2% / exposed DMA 11.7%(§3-11、06§2.2) | **MAC利用率9.69%という低効率**(exposed DMAではない) | Attention/Deformable Attention/GridSample/Reshapeの低計算密度演算——softmaxは非MAC、GridSampleはgather中心、reshapeはMACゼロ、少数サンプリング点の行列積は64 MAC/cycle/MPの並列レーンを満たせない(§5.1) |
+| **合計** | **31.58 ms**(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §4.2) | — | — | デジタル比率14.7%(4.63/31.58) |
+
+**YOLOPX(m2048, 48 ACE)**
+
+| 系統 | 実測値 | 内訳 | ボトルネック | 構造的理由 |
+|---|---|---|---|---|
+| アナログ | 7.56 ms(§3-1) | ACEクリティカルパス7.56 ms / SRAM時間6.83 ms(max) | **ACE-bound** | 単眼カメラ入力。E-ELAN backboneのクロスバー充填率49.6%(§4.3)。out_C>272の層は9.9%のみで列分割ロスが少ないと推測される(06§3.6、**[推測]**) |
+| デジタル | 未確定。既存の予備値ではmacs_bn=0.089・544.84 fps相当(latency換算約1.84 ms、出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §9.2項目3) | 未取得。BEVFormerのようなサイクル内訳・電力分離実測は本調査群では未実施 | 未確認**[推測、次の調査候補]** | YOLOPXのdecoupled head(cls/reg/obj_preds)がoff-chip処理される可能性が高いが、上記予備値が実際の出荷ハイブリッド構成のデジタル部分を代表するかは未検証 |
+
+### 6.2 消費電力
+
+**BEVFormer-Tiny(m2072, 72 ACE)**
+
+| 系統 | 実測値 | 内訳 | ボトルネック | 構造的理由 |
+|---|---|---|---|---|
+| アナログ | 3.2873 W(§3-10) | ACE(active+sleep)48.9% / Interconnect(NOC)26.3% / Accessor14.0% / SRAM9.2% / Control1.7% | **データ移動系(SRAM+Accessor+NOC+Control=51.1%)がACE単体(48.9%)を上回る** | SRAM-bound構造(§3-1)の帰結。重み複製によるSRAM/Accessor増(§3-2)。72 ACE固定のため待機電力を絞る余地がない(48 ACEが不可行、§3-9) |
+| デジタル(Transformer部分) | 1.245 W(Power@30fps、§3-11、06§2.3) | DMEM/IMEM 34.7% / Non-MAC unit 28.3% / DDR 18.4% / MAC unit 12.7% / OCRAM 5.9% / Bus・NoC ~0% | **DMEM/IMEM+Non-MAC=63.0%**(DDRアクセスではない) | レイテンシ側と同一の構造的原因(Attention系演算の低計算密度) |
+| **合計** | **4.505 W**(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §4.2) | — | — | デジタル比率27.6%(1.245/4.505) |
+
+**YOLOPX(m2048, 48 ACE)**
+
+| 系統 | 実測値 | 内訳 | ボトルネック | 構造的理由 |
+|---|---|---|---|---|
+| アナログ | 0.7404 W(§3-10、PLAN文書記載値0.740Wと同一) | ACE61.7% / Interconnect(NOC)20.1% / Accessor10.4% / SRAM6.2% / Control1.6% | **ACE単体が6割超**(データ移動系はBEVFormerの約半分) | ACE-bound構造(§3-1)の帰結。48→72 ACEでの電力増(+11.6%)はACE sleepが88%を占め、重み複製由来のSRAM/Accessor増は12%のみ(§3-10.1) |
+| デジタル | 2.15 mW相当(§9.2予備値、出典同上)——アナログ側の0.3%未満 | 未取得 | 無視できる規模**[推測]** | YOLOPXの総電力はアナログ側が実質支配的で、デジタル側の構造改善は優先度が低いと推測される |
+| **合計** | **0.7404 W** | — | — | デジタル寄与は上記予備値が正しければ無視できる規模 |
+
+### 6.3 モデル構造的な改善指針(総括)
+
+| モデル | 領域 | 改善指針 | 出典 |
+|---|---|---|---|
+| BEVFormer(SRAM-bound) | アナログ・レイテンシ/電力 | 重み再利用度の高い畳み込みを優先、depthwise比率抑制、多視点入力の特徴マップサイズを抑える、Attention/Transformer部分のSRAM往復量削減(grouped conv変換の効果は未実測) | §4.2 |
+| BEVFormer | デジタル・レイテンシ/電力 | Attention/Deformable Attention/GridSample/Reshapeの計算密度改善(MACアレイに適した表現への変換、または発行回数の削減)。OCRAM/DDR容量調整は効果が薄い | §3-11, §5.1 |
+| BEVFormer | 面積・SKU | 48 ACEを可行にするモデル軽量化(アナログ処理時間を約24%短縮)で、72 ACE固定によるACE sleep待機電力コストを削減できる可能性 | §3-9, §3-10.1 |
+| YOLOPX(ACE-bound) | アナログ・レイテンシ | クロスバー充填率の維持・向上(1280×272に適合するチャネル形状、過剰なタイル分割の回避)。MAC数削減は充填率維持が前提 | §4.3 |
+| YOLOPX | アナログ・電力 | SKU選定時はSRAM/Accessorトラフィックよりも「ACE待機電力」を優先して評価する | §3-10.1 |
+| YOLOPX | デジタル | 総電力の0.3%未満と推定され、優先度は低い**[推測]** | §9.2予備値 |
+
+**含意**: BEVFormerとYOLOPXは、レイテンシ・電力の両軸で「データ移動系(SRAM/Accessor/Interconnect/DMEM/IMEM)が支配的か、演算系(ACE/MAC)が支配的か」という同一の非対称性を、アナログ・デジタルの両方の実行系統で共有している。BEVFormer(SRAM-bound)はアナログでもデジタルでもデータ移動・低密度演算が支配的コストであり、改善指針も両系統で「データ移動量・低密度演算の削減」に一貫して収束する。YOLOPX(ACE-bound)はアナログ側がACEそのものに支配され、デジタル側は総電力に対してほぼ無視できる規模にとどまる。**この対称性は、律速要因の判定(§4.1)が電力側だけでなくデジタル側の改善対象判定にも使える、という§3-10の結論を裏付けている。**
+
+---
+
+## 7. まとめ表
 
 | 課題(§3) | モデル構造への含意(§4, §5) | 対応する既存レバー(§2) |
 |---|---|---|
@@ -391,6 +464,7 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 | A_max未確定(3-9) | モデル軽量化(約24%短縮目標)かA_max見直しの二択 | — |
 | 電力もSRAM-bound/ACE-boundの分岐を引き継ぐ(3-10) | 律速判定(4.1)が電力側の改善対象判定にも使える | `tools/power_breakdown/power_breakdown.py` |
 | num_aces↑によるpower悪化はACEスリープが主因(3-10.1) | SKU選定時のpower見積りはACE待機電力を優先して評価 | — |
+| 実ハイブリッドのデジタル側ボトルネックは全デジタル評価と異なる(3-11) | Attention系の計算密度改善が有効。OCRAM/DDR調整は効果薄(§6.1, §6.2) | `pow*Pj`分離実測(§5.1手法の適用) |
 | depthwise Convは強制デジタル化 | on-chip密度を優先する場合は比率を絞る(4.2) | `MarkDepthwiseConvsAsDigital` |
 | 多カメラ・多視点入力はSRAM負荷増(4.2) | 特徴マップ解像度・カメラ数に注意 | — |
 | Attentionはoff-chip一括処理になりやすい(4.2) | grouped Conv変換の効果は未実測 | `AttentionDetr`等のRewriteRule |
@@ -399,13 +473,14 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 
 ---
 
-## 7. 参照
+## 8. 参照
 
 - [00_overview.md](00_overview.md) — SDK全体構成、レベルA/Bのアナログ/デジタル分割
 - [01_compilation.md](01_compilation.md) — コンパイルフロー、RewriteRule分類、量子化ポリシー
 - [02_ppa_estimation.md](02_ppa_estimation.md) — PPA推定式・SRAM/ACE分解手法・電力未算入項目
 - [03_accuracy_simulation.md](03_accuracy_simulation.md) — 精度シミュレーションとBCM忠実度モデル
 - [05_all_digital_ppa.md](05_all_digital_ppa.md) — 全デジタル実行の実測、`nMPs`/OCRAMスイープ
+- [06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md) — 実ハイブリッド構成のデジタル側ボトルネック実測(§3-11)、ONNXグラフに基づくYOLOPX/BEVFormerの構造解析(§4.3)
 - [to_structural.md](conversion_steps/to_structural.md) — on/off-chipマーキング機構、depthwise conv扱い
 - [PLAN_bevformer_ppa_exploration.md](PLAN_bevformer_ppa_exploration.md) — BEVFormer-Tiny SKU探索(72 ACEが唯一の可行点)
 - [PLAN_yolopx_ppa_exploration.md](PLAN_yolopx_ppa_exploration.md) — YOLOPX SKU探索(48 ACEが最適点)
