@@ -43,6 +43,7 @@
 | Analog NPU Processing Time | 38.85 ms | 26.95 ms |
 | Digital Estimated Frame Processing | 4.63 ms | 4.63 ms |
 | Combined Frame Rate | 23.00 fps | 31.67 fps |
+| Total Combined Power(fps基準が異なるため直接比較不可、§下記注記) | 3.428 W @23fps(analog 2.494 / digital 0.934) | 4.505 W @30fps(analog 3.287 / digital 1.218) |
 | ACE Utilization | 72.26% | 69.43% |
 | **Number of ACEs** | **48(正表示)** | 72 |
 | Critical Path ACE Latency | 35.22 ms | 23.37 ms |
