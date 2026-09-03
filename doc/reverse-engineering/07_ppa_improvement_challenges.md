@@ -384,17 +384,19 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 
 1. **KVキャッシュ増大によるSRAM/DDRトラフィック増加。** BEVFormerが6カメラ入力でSRAM-bound化した構造(§3-1, §4.2)と同型のリスクが、シーケンス長の増大でも起こりうる**[推測]**。層数・シーケンス長が増えるほど、デジタル側のメモリトラフィックがボトルネックになる可能性が高い。
 
-2. **動的シーケンス長・自己回帰デコードとの整合。** `vnnmap`はdynamic batch非対応で、batch=-1を1に固定する(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §8)。pythia(GPT-NeoX系、SDK内で唯一のLLM相当モデル)の`to_structural`実装は、`use_kv_cache=True`の場合に`fix_sequence_length`/`simplify_inputs`をスキップする分岐を既に持っており(出典: [to_structural.md](conversion_steps/to_structural.md) §7.3)、SDK側にKVキャッシュ運用を想定した仕組みは存在する。しかし自己回帰デコード時にシーケンス長が変化する場合の静的shape要求との整合性、およびそのPPAへの影響は本調査群では未検証。
+2. **通常の(全結合・quadratic)Attentionは、Deformable Attentionと異なる原因の組み合わせでボトルネックになると推測される。** §3-11/[06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md) §2で確認したBEVFormerのDeformable Attentionの低効率は、(a)クエリごとに数点のサンプリング点だけを参照するため行列積の内部次元が極端に小さくMACアレイを埋められない、(b)Softmax/Reshapeが多数の細かい演算に分かれ発行回数自体が多い(DMEM/IMEM負荷の主因)、という2つの原因の組み合わせによる。通常のAttention(QK^T・Attention×Vがシーケンス長全体を内部次元とする、より大きく規則的な行列積)では、原因(a)(小さな行列積によるアレイ空転)は**軽減される可能性が高い**一方、Softmax自体はseq_len²サイズのスコア行列全体に対して行われるため計算量の絶対値はむしろ増大し、かつ演算の発行回数(細切れ度)は下がるが**代わりにseq_len²サイズの中間テンソル(Attention weight行列)の読み書きというデータ移動負荷が生じる**と推測される**[推測、未実測]**。すなわち「小さな行列積・演算の細切れ」という原因から「Softmax処理量・巨大な中間テンソルの移動」という原因へ、ボトルネックの質が変化すると考えられる。シーケンス長が長いLLM/VLAでは後者が優越しやすく、これは次項(KVキャッシュ)と同じ方向のリスクである。
 
-3. **既存コンパイラ変換パスの層数スケーラビリティは未実測。** Gemm/MatMul→Conv統一、Attention→`group=8`グループConv、`vidRope`によるRoPE表現、`vidMultiQueryExpand`によるGQA/MQA KV展開(出典: [01_compilation.md](01_compilation.md) §3.1.2(A)(G), §3.1.3)は、コード上は層数に依存しない汎用的な書き換え規則として実装されているが、層数が増えた場合のコンパイル時間・CP-SAT収束性(§3-8で見た通り既存2モデルでも90〜120分・タイムアウトが発生している)がどう変化するかは未検証。層数が数十〜数百に達するLLMでは、コンパイル時間そのものがボトルネックになる可能性がある**[推測]**。
+3. **動的シーケンス長・自己回帰デコードとの整合。** `vnnmap`はdynamic batch非対応で、batch=-1を1に固定する(出典: [05_all_digital_ppa.md](05_all_digital_ppa.md) §8)。pythia(GPT-NeoX系、SDK内で唯一のLLM相当モデル)の`to_structural`実装は、`use_kv_cache=True`の場合に`fix_sequence_length`/`simplify_inputs`をスキップする分岐を既に持っており(出典: [to_structural.md](conversion_steps/to_structural.md) §7.3)、SDK側にKVキャッシュ運用を想定した仕組みは存在する。しかし自己回帰デコード時にシーケンス長が変化する場合の静的shape要求との整合性、およびそのPPAへの影響は本調査群では未検証。
 
-4. **GQA/MQA・RoPEを採用するモデル設計はコンパイラの最適化パスと整合している。** `vidRope`(LLaMA系RoPE)と`vidMultiQueryExpand`(GQA/MQAのKV展開)という専用の書き換えパスが既に存在する(出典: [01_compilation.md](01_compilation.md) §3.1.2(D)(C))ことから、これらの技術を採用するLLM設計は、SDKが既にアナログMMA向け表現への変換手段を持つという意味で相性が良い。逆に、これらのパスが対応しないAttention変種を使う場合、Transformer部分が丸ごとoff-chip(標準ONNX opのまま量子化・ノイズなしで実行)に落ちる可能性がある([03_accuracy_simulation.md](03_accuracy_simulation.md) §8.2の「Attention分解/LayerNormに対応するグラフ書き換えは精度シミュレーション側に存在しない」という記述と符合する)。
+4. **既存コンパイラ変換パスの層数スケーラビリティは未実測。** Gemm/MatMul→Conv統一、Attention→`group=8`グループConv、`vidRope`によるRoPE表現、`vidMultiQueryExpand`によるGQA/MQA KV展開(出典: [01_compilation.md](01_compilation.md) §3.1.2(A)(G), §3.1.3)は、コード上は層数に依存しない汎用的な書き換え規則として実装されているが、層数が増えた場合のコンパイル時間・CP-SAT収束性(§3-8で見た通り既存2モデルでも90〜120分・タイムアウトが発生している)がどう変化するかは未検証。層数が数十〜数百に達するLLMでは、コンパイル時間そのものがボトルネックになる可能性がある**[推測]**。
 
-5. **VLA固有の非対称拡大リスク。** VLA(視覚+言語+行動)は畳み込みバックボーン(アナログ向き)とLLMデコーダ(デジタル・シーケンシャル向き)の結合になりやすい。BEVFormerで確認された「アナログMAC比率98.3%だが処理時間比率ではデジタルが14.5%」という非対称(出典: [FUTURE_bevformer_inference_run.md](FUTURE_bevformer_inference_run.md))が、デコーダの層数増加に伴ってさらに極端化する可能性が高い**[推測]**——デコーダの計算量がバックボーンに対して相対的に小さくても、処理時間支配率は計算量比率よりずっと高くなりうる。
+5. **GQA/MQA・RoPEを採用するモデル設計はコンパイラの最適化パスと整合している。** `vidRope`(LLaMA系RoPE)と`vidMultiQueryExpand`(GQA/MQAのKV展開)という専用の書き換えパスが既に存在する(出典: [01_compilation.md](01_compilation.md) §3.1.2(D)(C))ことから、これらの技術を採用するLLM設計は、SDKが既にアナログMMA向け表現への変換手段を持つという意味で相性が良い。逆に、これらのパスが対応しないAttention変種を使う場合、Transformer部分が丸ごとoff-chip(標準ONNX opのまま量子化・ノイズなしで実行)に落ちる可能性がある([03_accuracy_simulation.md](03_accuracy_simulation.md) §8.2の「Attention分解/LayerNormに対応するグラフ書き換えは精度シミュレーション側に存在しない」という記述と符合する)。
+
+6. **VLA固有の非対称拡大リスク。** VLA(視覚+言語+行動)は畳み込みバックボーン(アナログ向き)とLLMデコーダ(デジタル・シーケンシャル向き)の結合になりやすい。BEVFormerで確認された「アナログMAC比率98.3%だが処理時間比率ではデジタルが14.5%」という非対称(出典: [FUTURE_bevformer_inference_run.md](FUTURE_bevformer_inference_run.md))が、デコーダの層数増加に伴ってさらに極端化する可能性が高い**[推測]**——デコーダの計算量がバックボーンに対して相対的に小さくても、処理時間支配率は計算量比率よりずっと高くなりうる。
 
 ### 5.3 本ドキュメント作成時点で未検証の事項(次の実測候補)
 
-- pythia(GPT-NeoX系、LLM相当)のPPA実測は、BEVFormer/YOLOPXと同形式のSKU探索(`PLAN_*`)としては未実施。
+- pythia(GPT-NeoX系、LLM相当)のPPA実測は、BEVFormer/YOLOPXと同形式のSKU探索(`PLAN_*`)としては未実施。通常のAttentionを持つモデルを実際に`vnnmap`で実行し、§5.2項目2の推測(小さな行列積によるアレイ空転は軽減されるがseq_len²の中間テンソル移動が悪化する)を検証できる候補でもある。
 - KVキャッシュを使った自己回帰デコードの`funcsim`/`vnnmap`実測は未実施。
 - 層数を実際に増やした場合のコンパイラ変換パスのコンパイル時間・CP-SAT収束性は未検証。
 - Attention部分をoff-chip一括処理からアナログMMAへの変換に載せ替えた場合のSRAMトラフィック変化(§4.2で[推測]とした点)の実測。
