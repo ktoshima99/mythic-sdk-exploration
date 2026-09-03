@@ -322,6 +322,10 @@ SRAM負荷の主因は「並列化のための重み複製」である。§3-2�
 
 - **重み再利用度の高い畳み込みはSRAM往復あたりの計算密度が高く、アナログMMAに適する。** BEVFormerのResNet-50バックボーン(出典: [06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md) §3.2、ONNXグラフのノード命名から確認)はMAC比率98.3%を占めながらアナログ側で69.4%という比較的高いACE利用率を達成している(出典: [FUTURE_bevformer_inference_run.md](FUTURE_bevformer_inference_run.md)、`PLAN_bevformer_ppa_exploration.md` §2)。1回の重みロードで多数の出力位置を生成する構造(通常の畳み込み)はSRAM再アクセスの相対コストが低い。
 
+  **メカニズム[推測]**: weight-stationary構成のためSRAM往復量は主に活性化データで決まる。通常の畳み込みでは、1つの入力活性化値がスライディングウィンドウにより空間方向にカーネルサイズ(k²)個の重なり合う出力位置の計算に使われ、かつチャンネル方向にも出力チャンネル数(Cout)個分再利用される——つまり1バイトの活性化データをSRAMから1回読み出すだけで、およそ`k² × Cout`回のMAC演算が生まれる。この「活性化1バイトあたりのMAC生成数」(算術強度)が高いほど、同じ総MAC量に対して動かす必要のある活性化バイト数(=SRAM往復量、したがってSRAM時間)が相対的に減る。depthwise conv(Cout方向の再利用が存在せず`k²`回のみ)や小チャンネルの1×1 convはこの比率が低く、SRAM時間を相対的に押し上げる方向に働く。
+
+  **注意: 下記の「多視点・多カメラ入力」指針とは異なる種類の「重み再利用」である。** ここで有益とされる重み再利用は、**同一の活性化データ**に対して1つの畳み込み演算の内部で空間・チャンネル方向に重みを再利用すること(演算そのものの内部構造)を指す。一方、多視点入力が「同じ共有バックボーンの重みを6回使い回す」ことも重み再利用の一種だが、これは**独立した別々の活性化データ(各カメラの異なる画素)**に同じ重みを適用するものであり、活性化データ自体はカメラ数倍に増えるためSRAM時間は改善しない(次の指針参照)。両者を同じ「重み再利用」という言葉で括ると混同しやすいため、区別が必要である。
+
 - **Depthwise Convは強制的にデジタル(SALU)に落ちる。** `MarkDepthwiseConvsAsDigital`が`group == out_channels`かつ`in_channels/group == 1`の条件を満たすConvに`__digital_onchip`属性を付与し、アナログMMAではなくSALU(デジタル)で処理される(出典: [to_structural.md](conversion_steps/to_structural.md) §8.1)。省パラメータ設計としてよく使われるDepthwise Convは、この意味でオンチップのアナログ処理密度を下げる方向に働く。on-chipでの計算密度を優先するなら、depthwise比率を絞るか、デジタル側で処理される前提でレイテンシ予算を確保する必要がある。
 
 - **多視点・多カメラ入力は特徴マップサイズに比例してSRAM負荷を増やす。** BEVFormer(6カメラ、SRAM-bound、26.95ms)とYOLOPX(単一カメラ、ACE-bound、6.83ms)の対比がこれを裏付ける(出典: [02_ppa_estimation.md](02_ppa_estimation.md) §3.9)。カメラ数・解像度・特徴マップ解像度の増加は、SRAM-bound化のリスクを直接高める。
