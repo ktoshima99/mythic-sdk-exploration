@@ -330,7 +330,7 @@ SRAM負荷の主因は「並列化のための重み複製」である。§3-2�
 
   **注意: 下記の「多視点・多カメラ入力」指針とは異なる現象である。** ここで有益とされるのは活性化再利用度(**同一の活性化データ**が1つの畳み込み演算の内部で空間・チャンネル方向に多数のMAC演算へ使い回される、演算そのものの内部構造)である。一方、多視点入力は「同じ共有バックボーンの重み」を6回使い回すが、これは**独立した別々の活性化データ(各カメラの異なる画素)**に同じ重みを適用するものであり、各カメラの活性化データはそれぞれ1回しか使われないため活性化再利用度は改善しない——活性化データ自体はカメラ数倍に増えるためSRAM時間は改善しない(次の指針参照)。「重みを使い回す」という表面的な共通点だけで両者を同じ現象と見なすと混同しやすいため、区別が必要である。
 
-- **Depthwise Convは強制的にデジタル(SALU)に落ちる。** `MarkDepthwiseConvsAsDigital`が`group == out_channels`かつ`in_channels/group == 1`の条件を満たすConvに`__digital_onchip`属性を付与し、アナログMMAではなくSALU(デジタル)で処理される(出典: [to_structural.md](conversion_steps/to_structural.md) §8.1)。省パラメータ設計としてよく使われるDepthwise Convは、この意味でオンチップのアナログ処理密度を下げる方向に働く。on-chipでの計算密度を優先するなら、depthwise比率を絞るか、デジタル側で処理される前提でレイテンシ予算を確保する必要がある。
+- **Depthwise Convは強制的にデジタル(SALU)に落ちる。** `MarkDepthwiseConvsAsDigital`が`group == out_channels`かつ`in_channels/group == 1`の条件を満たすConvに`__digital_onchip`属性を付与し、アナログMMAではなくSALU(デジタル)で処理される(出典: [to_training.md](conversion_steps/to_training.md) §6.2。実装は`munc_ops/mark_depthwise_convs_as_digital.py:9-14,29-37`で確認済み。関連: `00_overview.md` §3.5、`03_accuracy_simulation.md`)。省パラメータ設計としてよく使われるDepthwise Convは、この意味でオンチップのアナログ処理密度を下げる方向に働く。on-chipでの計算密度を優先するなら、depthwise比率を絞るか、デジタル側で処理される前提でレイテンシ予算を確保する必要がある。
 
 - **多視点・多カメラ入力は特徴マップサイズに比例してSRAM負荷を増やす。** BEVFormer(6カメラ、SRAM-bound、26.95ms)とYOLOPX(単一カメラ、ACE-bound、6.83ms)の対比がこれを裏付ける(出典: [02_ppa_estimation.md](02_ppa_estimation.md) §3.9)。カメラ数・解像度・特徴マップ解像度の増加は、SRAM-bound化のリスクを直接高める。
 
@@ -507,7 +507,8 @@ BEVFormer側の充填率がYOLOPXより低いことは、SRAM-boundであるた�
 - [03_accuracy_simulation.md](03_accuracy_simulation.md) — 精度シミュレーションとBCM忠実度モデル
 - [05_all_digital_ppa.md](05_all_digital_ppa.md) — 全デジタル実行の実測、`nMPs`/OCRAMスイープ
 - [06_hybrid_digital_and_structural_analysis.md](06_hybrid_digital_and_structural_analysis.md) — 実ハイブリッド構成のデジタル側ボトルネック実測(§3-11)、ONNXグラフに基づくYOLOPX/BEVFormerの構造解析(§4.3)
-- [to_structural.md](conversion_steps/to_structural.md) — on/off-chipマーキング機構、depthwise conv扱い
+- [to_structural.md](conversion_steps/to_structural.md) — on/off-chipマーキング機構(モデル実装者による手動宣言)
+- [to_training.md](conversion_steps/to_training.md) §6.2 — `MarkDepthwiseConvsAsDigital`によるdepthwise convのデジタル(SALU)確定
 - [PLAN_bevformer_ppa_exploration.md](PLAN_bevformer_ppa_exploration.md) — BEVFormer-Tiny SKU探索(72 ACEが唯一の可行点)
 - [PLAN_yolopx_ppa_exploration.md](PLAN_yolopx_ppa_exploration.md) — YOLOPX SKU探索(48 ACEが最適点)
 - [HOWTO_ppa_exploration_tools.md](HOWTO_ppa_exploration_tools.md) — `mythic-compiler`/`mythic-ppa-estimators`の使い方、既知バグ
