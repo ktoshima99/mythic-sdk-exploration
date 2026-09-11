@@ -1,4 +1,6 @@
-# BEVFormer-Tiny Transformer構成スケーリング実測レポート
+# BEVFormer-Tiny Transformer構成スケーリング実測レポート(内部版)
+
+**社内限定。** 本ドキュメントは`doc/reverse-engineering/`配下の逆アセンブル・`strings`調査結果を引用している箇所を含む。外部公表用には、それらを一切含まない[report_external.md](report_external.md)を参照すること。
 
 [doc/reverse-engineering/07_ppa_improvement_challenges.md](../reverse-engineering/07_ppa_improvement_challenges.md) §3-3・§5.2は、BEVFormer-Tiny Transformerの既存PPA実測(4.63 ms / 1.245 W@30fps、MAC利用率9.69% — [05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §4.1、[06_hybrid_digital_and_structural_analysis.md](../reverse-engineering/06_hybrid_digital_and_structural_analysis.md) §2.1-2.3)が**たった1点のみ**であり、encoder/decoder層数や1層あたりのテンソルサイズ(`bev_h_`/`bev_w_`/`embed_dims`)を変えたスケーリング実測が行われていないことを明記している。本レポートは、そのために新規実装したスイープツール(`tools/digital_ppa/transformer_config_sweep/`)を用いて実際に9点の実測を行った結果と、そこから得られた知見をまとめる。
 
