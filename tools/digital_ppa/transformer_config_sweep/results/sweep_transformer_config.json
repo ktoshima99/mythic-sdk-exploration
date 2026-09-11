@@ -74,7 +74,11 @@
     },
     "memory": {
       "max_ddr_kB": 23908.22,
+      "max_ddr_weights_kB": 0.0,
+      "max_ddr_io_kB": 22033.22,
       "max_ocr_kB": 1022.0,
+      "max_ocr_weights_kB": 256.5,
+      "max_ocr_io_kB": 752.88,
       "ddr_read_MB": 123.5,
       "ddr_write_MB": 17.1
     },
@@ -155,7 +159,11 @@
     },
     "memory": {
       "max_ddr_kB": 10925.52,
+      "max_ddr_weights_kB": 0.0,
+      "max_ddr_io_kB": 10925.52,
       "max_ocr_kB": 998.41,
+      "max_ocr_weights_kB": 353.5,
+      "max_ocr_io_kB": 631.75,
       "ddr_read_MB": 27.1,
       "ddr_write_MB": 0.0
     },
@@ -236,7 +244,11 @@
     },
     "memory": {
       "max_ddr_kB": 80016.8,
+      "max_ddr_weights_kB": 6852.5,
+      "max_ddr_io_kB": 62639.3,
       "max_ocr_kB": 972.56,
+      "max_ocr_weights_kB": 139.0,
+      "max_ocr_io_kB": 760.5,
       "ddr_read_MB": 1347.5,
       "ddr_write_MB": 436.5
     },
@@ -317,7 +329,11 @@
     },
     "memory": {
       "max_ddr_kB": 13633.22,
+      "max_ddr_weights_kB": 0.0,
+      "max_ddr_io_kB": 13633.22,
       "max_ocr_kB": 966.5,
+      "max_ocr_weights_kB": 144.75,
+      "max_ocr_io_kB": 821.62,
       "ddr_read_MB": 15.1,
       "ddr_write_MB": 0.0
     },
@@ -398,7 +414,11 @@
     },
     "memory": {
       "max_ddr_kB": 58585.53,
+      "max_ddr_weights_kB": 15227.25,
+      "max_ddr_io_kB": 37733.28,
       "max_ocr_kB": 987.17,
+      "max_ocr_weights_kB": 288.12,
+      "max_ocr_io_kB": 676.75,
       "ddr_read_MB": 527.5,
       "ddr_write_MB": 36.6
     },
@@ -479,7 +499,11 @@
     },
     "memory": {
       "max_ddr_kB": 8156.84,
+      "max_ddr_weights_kB": 0.0,
+      "max_ddr_io_kB": 8156.84,
       "max_ocr_kB": 1004.88,
+      "max_ocr_weights_kB": 353.5,
+      "max_ocr_io_kB": 651.25,
       "ddr_read_MB": 18.9,
       "ddr_write_MB": 0.0
     },
@@ -560,7 +584,11 @@
     },
     "memory": {
       "max_ddr_kB": 51933.63,
+      "max_ddr_weights_kB": 8198.59,
+      "max_ddr_io_kB": 36860.04,
       "max_ocr_kB": 1022.0,
+      "max_ocr_weights_kB": 256.5,
+      "max_ocr_io_kB": 755.38,
       "ddr_read_MB": 267.4,
       "ddr_write_MB": 168.5
     },
@@ -641,7 +669,11 @@
     },
     "memory": {
       "max_ddr_kB": 21408.22,
+      "max_ddr_weights_kB": 0.0,
+      "max_ddr_io_kB": 21408.22,
       "max_ocr_kB": 1022.0,
+      "max_ocr_weights_kB": 256.5,
+      "max_ocr_io_kB": 752.88,
       "ddr_read_MB": 106.4,
       "ddr_write_MB": 0.0
     },
@@ -722,7 +754,11 @@
     },
     "memory": {
       "max_ddr_kB": 31042.38,
+      "max_ddr_weights_kB": 5883.66,
+      "max_ddr_io_kB": 22033.71,
       "max_ocr_kB": 1022.0,
+      "max_ocr_weights_kB": 256.5,
+      "max_ocr_io_kB": 752.88,
       "ddr_read_MB": 137.0,
       "ddr_write_MB": 24.4
     },

@@ -156,13 +156,57 @@ MACsが滑らかに増加する一方、レイテンシと電力は**そうで�
 | dec_2 | 1022.00 | 21,408.22 | 106.4 | **0.0** | 3.1% |
 | dec_10 | 1022.00 | 31,042.38 | 137.0 | 24.4 | 11.8% |
 
-`maxOCR`は全点でほぼ一定(966〜1022 kB、OCRAM1の容量1024 kBに近い値)であるのに対し、`DDR Write`はゼロかゼロでないかの二値的な切り替わりを示している。これは、**活性化のワーキングセットがOCRAM(オンチップスクラッチパッド、1MB)に収まる限りは中間結果をDDRに書き出す必要がなく`exposed DMA`は小さいままだが、収まらなくなった瞬間に中間結果のDDR往復(スピル)が発生し、`exposed DMA`サイクルが一気に跳躍する**という閾値的な挙動を強く示唆する。
+`maxOCR`は全点でほぼ一定(966〜1022 kB、`OCRAM1`の容量1024 kBに近い値)であるのに対し、`DDR Write`は小さい点(0.0〜17.1 MB: `bev_25`・`embed_128`・`enc_1`・`dec_2`・`baseline`)と大きい点(24.4〜436.5 MB: `dec_10`・`embed_384`・`enc_5`・`bev_75`)の間に明瞭な差がある(厳密な二値ではなく、baseline・dec_10のように小さいが非ゼロの書き込みを伴う点も存在する — 正確な境界は§5.4で追加実測により特定する)。これは、**活性化(および重み、§5.4参照)のワーキングセットがオンチップ容量に収まる限りは中間結果をDDRに書き出す必要がなく`exposed DMA`は小さいままだが、収まらなくなると中間結果のDDR往復(スピル)が発生し、`exposed DMA`サイクルが跳躍する**という閾値的な挙動を強く示唆する。
 
 [07_ppa_improvement_challenges.md](../reverse-engineering/07_ppa_improvement_challenges.md) §4.2はAnalog(ACE)側のSRAM/ACE境界比という同種の律速要因切り替えの枠組みを導出している。本実測は、Digital側でも同様の「オンチップ容量境界」による律速要因の不連続な切り替わりが実際に起きることを、Transformer層数・入力サイズという新しい軸で確認したものである。
 
 ### 5.3 MAC利用率はどの軸でも一貫して低いままである
 
 MAC利用率(`efficiency_pct`)は3.4%〜16.1%の範囲に収まり、どの構成でも[05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md)が指摘する低MAC利用率(基準点9.69%)から大きく改善しない。層数や入力サイズを変えても、Deformable Attentionの少数サンプリング点に起因する小さな行列積という構造自体は変わらないため、利用率の改善は本質的に構造変更(サンプリング点数やヘッド数の再設計)が必要と考えられる**[推測]**。
+
+### 5.4 補足調査: 重みのDDR退避が発生する容量境界の推定
+
+§5.2で見た`exposed DMAサイクル`の跳躍は、`Max DDR Weights (kB)`(重みのうちDDR常駐が必要になった分)が0からゼロでない値に切り替わる境界と対応している可能性が高いという仮説を検証するため、以下の追加実測を行った(生データ: `tools/digital_ppa/transformer_config_sweep/results/ocram_threshold_bisection.json`):
+
+- `bev_h_`/`bev_w_`を55・60・65・70で細分化(基準50と75の間)
+- `encoder.num_layers=4`(基準3と5の間)
+- `decoder.num_layers=8`(基準6と10の間)
+- `embed_dims=320`(基準256と384の間)
+
+このために`run_transformer_config_point.py`の出力に`Max DDR Weights (kB)`・`Max DDR IO (kB)`・`Max OCR WEIGHTS (kB)`・`Max OCR IO (kB)`の内訳を追加した(vnnmapの`maxDDR`/`maxOCR`行にもとから含まれる`wgt/bas/sft`(重み)/`inp/out`(活性化)の内訳を取得するのみで、追加のvnnmap実行は不要)。
+
+**まず確認された事実(ドキュメント調査による)**: `bevformer.cfg`は`OCRAM0=33,554,432`バイト(32MB)・`OCRAM1=1,048,576`バイト(1MB)・`pCluster=12`を指定している。[05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §4.3は、フルグラフ(バックボーン込み)構成で`OCRAM0`を32MB→512MBに増やすとDDR Write/Readがほぼゼロになることを実測しており、`OCRAM0`がオンチップに載るかどうかを支配する主要な容量パラメータであることを示している。一方、`maxOCR`/`maxDDR`メトリクスの計算ロジック自体(重みと活性化のどちらがどの条件でDDRに退避するかを決める正確な判定式)は、既存ドキュメント中で逆アセンブルされていない未解明事項として明記されている([01_compilation.md](../reverse-engineering/01_compilation.md) §3.4.3の`[推測(strings根拠)]`注記、[05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §9.2の未解決課題リスト)。判明している唯一の手がかりは、コンパイラ内の文字列リテラル`"Not enough OCR in cluster %u switch to DDR in layer %u/%u"`・`"Cut before layer %2u/%2u => weight %7.1f kB (OCR %7.1f kB)"`であり、この判定が**クラスタ単位・レイヤー単位**で行われることを示唆している(`pCluster=12`と整合)。
+
+**そのため、汎用的な解析式は既存資料からは得られない。以下は本レポートで実測により初めてブラケットした値である。**
+
+全16点(元の9点+追加7点)を`Model Size (MB)`(モデル全体の静的重みサイズ)でソートすると、4つの軸(層数・BEVサイズ・embed_dims)を横断して極めて明瞭な境界が現れる:
+
+| Model Size (MB) | Max DDR Weights (kB) | tag |
+|---|---|---|
+| 5.708 | 0.00 | embed_128 |
+| 7.842 | 0.00 | dec_2 |
+| 10.495 | 0.00 | enc_1 |
+| 11.562 | 0.00 | bev_25 |
+| **13.622** | **0.00** | **baseline** |
+| **14.199** | **6485.50** | **bev_55** |
+| 14.830 | 6951.07 | bev_60 |
+| 15.185 | 4295.60 | enc_4 |
+| 15.517 | 6893.50 | bev_65 |
+| 16.259 | 6981.50 | bev_70 |
+| 16.512 | 2868.50 | dec_8 |
+| 16.748 | 8198.59 | enc_5 |
+| 17.055 | 6852.50 | bev_75 |
+| 18.751 | 10763.75 | embed_320 |
+| 19.402 | 5883.66 | dec_10 |
+| 24.661 | 15227.25 | embed_384 |
+
+**16点全てが、モデル全体の重みサイズ13.622 MB(baseline)と14.199 MB(bev_55)の間の1点の境界できれいに二分される** — これ未満では常に`Max DDR Weights=0`(重みが完全にオンチップに載る)、これ以上では常に`Max DDR Weights>0`(境界を超えた途端に2.9〜15.2 MBという大きな塊が一度にDDRへ退避する)。この「境界を超えると数MB単位で一気に退避する」という不連続な挙動は、上記の文字列リテラルが示す**レイヤー単位の判定**(1レイヤー分の重み丸ごとがOCRに収まるかDDRに切り替えるかの二択)と整合する。
+
+ただし2点、精度の限界として明記する:
+1. `Max DDR Weights`/`Max OCR Weights`はモデル全体の重み合計(13〜25 MB)よりずっと小さい値(数百kB〜十数MB)であり、これは「推論全体を通じたある瞬間のピーク値」であって「モデル全体が同時にどこかに存在する」という意味ではない。したがって「モデル全体の重みサイズが13.622〜14.199 MBの境界を超えるとDDR退避が起きる」という関係は、本実測で振った4軸(層数・BEVサイズ・embed_dims)においては**厳密に成り立つ実用上の予測式**だが、モデル全体の重みサイズそのものが直接比較される容量値である保証はない**[推測]**――より正確には、境界のすぐ内側にある特定の1レイヤーの重みサイズが、その時点でOCRに残っている空き容量(活性化に使われている分を除いた残り)を超えるかどうかで決まっている可能性が高い。
+2. 活性化側(`exposed DMAサイクル`・`Max DDR IO`)は同じ境界に対して滑らかには増加しない。`bev_55`(N_q=3,025)の`exposed DMA`(442,758)は`baseline`(N_q=2,500、1,180,216)より**小さく**、`bev_65`(2,467,958)は`bev_60`(3,023,655)より小さいなど、単調ではない。これは活性化側の配置判定もレイヤー・タイル単位の離散的な決定であり、`bev_h_×bev_w_`の総セル数のような単一の連続量では説明できないことを示している。
+
+この境界の正確な発動条件(どのレイヤーの、どの容量チェックが、正確にどの閾値バイト数で発動するか)を確定するには、[05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §2で`Cycles per inference`ブロックに対して行ったのと同様の`gdb`によるディスアセンブル(`tools/digital_ppa/probe_vnnmap_cycles.py`の手法を`maxOCR`/`maxDDR`の出力箇所に適用する)が必要であり、これは本レポート・既存資料のいずれでも未着手である。
 
 ---
 
@@ -198,8 +242,10 @@ docker exec mythic_digital_ppa /mythic/pyvnnsdk-env/bin/python /work/sweep_trans
 ## 8. 参照
 
 - [doc/reverse-engineering/07_ppa_improvement_challenges.md](../reverse-engineering/07_ppa_improvement_challenges.md) §3-3・§4.2・§5.2 — 本レポートが実測で埋めた未測定事項の出典、SRAM/ACE境界比の枠組み
-- [doc/reverse-engineering/05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §4.1・§5・§8/§9.2 — 基準実測値、電力コンポーネント別内訳の手法、efficiency%の制約
+- [doc/reverse-engineering/05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §4.1・§5・§8/§9.2 — 基準実測値、電力コンポーネント別内訳の手法、efficiency%の制約、OCRAM0拡大によるDDR trafficの実測(§4.3)
 - [doc/reverse-engineering/06_hybrid_digital_and_structural_analysis.md](../reverse-engineering/06_hybrid_digital_and_structural_analysis.md) §2.1-2.3 — 基準実測値の再確認、電力コンポーネント別内訳の公開表
-- `tools/digital_ppa/run_full_digital.py`・`tools/digital_ppa/sweep_system_config.py` — 本レポートのツールが模倣したイディオムの参照元
+- [doc/reverse-engineering/01_compilation.md](../reverse-engineering/01_compilation.md) §3.4.1・§3.4.3 — OCRAM0/OCRAM1のcfgキー定義、OCR→DDR切り替えを示す文字列リテラル(`Cut before layer...`等)
+- `tools/digital_ppa/run_full_digital.py`・`tools/digital_ppa/sweep_system_config.py`・`tools/digital_ppa/probe_vnnmap_cycles.py` — 本レポートのツールが模倣したイディオム、および§5.4で今後必要とされるディスアセンブル手法の参照元
 - `tools/digital_ppa/transformer_config_sweep/` — 本レポートの実測に使用した新規ツール一式
-- `tools/digital_ppa/transformer_config_sweep/results/sweep_transformer_config.json` — 本レポートの数値の一次データ
+- `tools/digital_ppa/transformer_config_sweep/results/sweep_transformer_config.json` — §3・§4の数値の一次データ(9点)
+- `tools/digital_ppa/transformer_config_sweep/results/ocram_threshold_bisection.json` — §5.4の容量境界推定に使用した追加7点の一次データ

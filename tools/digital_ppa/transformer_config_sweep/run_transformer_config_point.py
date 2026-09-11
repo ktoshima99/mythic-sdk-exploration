@@ -188,7 +188,11 @@ def main():
                 },
                 "memory": {
                     "max_ddr_kB": metrics["Max DDR (kB)"],
+                    "max_ddr_weights_kB": metrics["Max DDR Weights (kB)"],
+                    "max_ddr_io_kB": metrics["Max DDR IO (kB)"],
                     "max_ocr_kB": metrics["Max OCR (kB)"],
+                    "max_ocr_weights_kB": metrics["Max OCR WEIGHTS (kB)"],
+                    "max_ocr_io_kB": metrics["Max OCR IO (kB)"],
                     "ddr_read_MB": metrics["DDR Read (MB)"],
                     "ddr_write_MB": metrics["DDR Write (MB)"],
                 },
