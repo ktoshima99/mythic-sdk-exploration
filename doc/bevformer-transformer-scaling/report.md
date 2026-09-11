@@ -208,13 +208,24 @@ MAC利用率(`efficiency_pct`)は3.4%〜16.1%の範囲に収まり、どの構�
 
 この境界の正確な発動条件(どのレイヤーの、どの容量チェックが、正確にどの閾値バイト数で発動するか)を確定するには、[05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §2で`Cycles per inference`ブロックに対して行ったのと同様の`gdb`によるディスアセンブル(`tools/digital_ppa/probe_vnnmap_cycles.py`の手法を`maxOCR`/`maxDDR`の出力箇所に適用する)が必要であり、これは本レポート・既存資料のいずれでも未着手である。
 
-**重要な限界: 上記13.622〜14.199 MBという境界は、`bevformer.cfg`で現在設定されている`OCRAM0=32MB`/`OCRAM1=1MB`/`pCluster=12`という特定のシミュレーション設定に対する境界であり、実際のM2000チップのデジタル側SRAM容量そのものではない。** 改めて調査した限り、OCRAM0/OCRAM1が実シリコンの物理容量と一致するという記述は、既存のReverse-engineeringドキュメント・実データシート([`Mythic_M2000_NPU_Datasheet_v0.3.pdf`](../../mythic_sdk/v26.05.2/doc/datasheets/Mythic_M2000_NPU_Datasheet_v0.3.pdf))のいずれにも存在しない:
+**重要な注記: `bevformer.cfg`のOCRAM0=32MB/OCRAM1=1MBは、本レポートが探索用に選んだ値ではなく、SDKの公式パイプラインがBEVFormer-TinyのPPA数値を算出する際に実際に使っている、ハードコードされた値である。** `mythic-compiler`が生成する`bevformer_postprocessing.py`は、
+
+```python
+model = BevformerTiny(result_directory)
+run_vnn_flow(model, result_directory,
+    system_config=Path(__file__).parent / "system_configs" / "bevformer.cfg",
+    skip_validation=True, advanced=True)
+```
+
+という形でこのcfgへのパスをコンパイル時に埋め込み、`vnnmap --explore --edma`を実行してデジタルNPU側のPPA(JSON)をコンパイル済みアーティファクトに焼き込む。`mythic-ppa-estimators`はこのJSONをそのまま読むだけで、OCRAM0/OCRAM1をユーザーが変更できるフラグは一切持たない([05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §4.1で報告されている"Digital Estimated Frame Processing: 4.63 ms"が、本レポートの基準点実測4.63msと完全一致するのはこのため)。したがって、本節で示した13.622〜14.199 MBの境界は、BEVFormer-Tinyについて**SDKが実際に公式PPA数値を計算する際の境界**である。
+
+ただし、この32MB/1MBという数値自体が、実際のM2000チップの物理的なSRAM容量と一致しているかどうかは、依然として未確認である:
 
 - [05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §6・§9.2は、デジタル側の面積(v-MPコア面積・SRAMマクロ面積/MB)が「SDK外の情報でしか見積もれない」「全デジタル評価の最大の未確定要素」と明記し、OCRAM0の現実的上限の確定を未解決課題として挙げている。
 - 実データシート`Mythic_M2000_NPU_Datasheet_v0.3.pdf`は"Shared SRAM"/"on-chip SRAM"を定性的に記述するのみで、容量の数値は一切記載していない。
-- 公式にサポートされるPPA Estimator(`Mythic_PPA_Estimator_Datasheet_v0.4.pdf` §5)は、SRAM容量を含むハードウェア構成を固定の「virtual platform」(例: 24Ace6Tile・48Ace12Tile)単位でのみ提供し、**ユーザーによるSRAM容量の自由設定は未リリースの将来機能**と明記している。本レポートで使用した`vnnmap`の`[sys]` cfg(`explore_model`経由)は、この公式プラットフォームの整合性チェックを経由しない、より低レベルの探索用インターフェースである(実際、`nMPs`についても実コンパイルパス`run_compilation`は`nMPs∈{1,4,8}`という実ハードウェア制約を強制するが、`explore_model`にはこの制約が一切なく、`bevformer.cfg`の`nMPs=288`はこの制約外で入力されている)。
+- 公式にサポートされるPPA Estimator(`Mythic_PPA_Estimator_Datasheet_v0.4.pdf` §5)がユーザー向けに提供する固定の「virtual platform」(例: 24Ace6Tile・48Ace12Tile)は、Analog側(ACEアレイ・タイル構成)を指すものであり、Digital側のこの`[sys]` cfg(OCRAM0/OCRAM1/nMPs)とは別の仕組みである。`bevformer.cfg`はSDK開発者がモデルごとにハードコードした値であって、同データシートが言う「ユーザーが自由設定できないハードウェア構成」の対象そのものではない――つまりデータシートはこの値の現実性について何も述べていない。
 
-したがって、本節の閾値は「BEVFormer-Tiny + 現行cfgの設定」という条件下での実測値として解釈すべきであり、実チップのSRAM容量が32MB+1MBと異なる場合はこの境界も相応にずれる。実チップの真の容量は本レポート・既存資料のいずれからも確認できない**[未確認]**。
+したがって、「32MB/1MBという値がSDKの公式PPA計算で実際に使われている」ことは確定したが、「32MB/1MBが実チップの真の容量と一致する」ことは依然として本レポート・既存資料のいずれからも確認できない**[未確認]**。実チップの容量がこれと異なる場合、SDKが現在報告しているPPA数値自体が実チップとズレている可能性がある。
 
 ---
 
