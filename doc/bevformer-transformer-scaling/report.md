@@ -229,6 +229,27 @@ run_vnn_flow(model, result_directory,
 
 したがって、「32MB/1MBという値がSDKの公式PPA計算で実際に使われている」ことは確定したが、「32MB/1MBが実チップの真の容量と一致する」ことは依然として本レポート・既存資料のいずれからも確認できない**[未確認]**。実チップの容量がこれと異なる場合、SDKが現在報告しているPPA数値自体が実チップとズレている可能性がある。
 
+### 5.5 BEVFormer-base相当のBEVグリッド(200×200)への外挿確認
+
+BEVFormer-baseはBEVグリッドを200×200(BEVFormer-tinyの50×50から16倍のセル数)とする構成である。他パラメータ(層数・embed_dims)はtinyのまま固定し、`bev_h_`/`bev_w_`のみ100・125・150・175・200と振って、§5.2-§5.4で見た傾向がこの規模でも継続するかを確認した(生データ: `tools/digital_ppa/transformer_config_sweep/results/bev_large_grid_sweep.json`):
+
+| tag | N_q(セル数) | MACサイクル | exposed DMA | 総サイクル | レイテンシ | MAC利用率 | Power@30fps | MACs | Model Size | DDR Write |
+|---|---|---|---|---|---|---|---|---|---|---|
+| bev_75(既存) | 5,625 | 11,603,821 | 40,078,099 | 53,930,708 | 21.38 ms | 3.37% | 4871.14 mW | 26.559 bn | 17.055 MB | 436.5 MB |
+| bev_100 | 10,000 | 18,102,823 | 69,117,634 | 90,178,855 | 39.66 ms | 2.78% | 12848.17 mW | 40.600 bn | 21.862 MB | 839.4 MB |
+| bev_125 | 15,625 | 26,475,730 | 204,776,184 | 235,122,319 | 110.28 ms | 1.44% | 25096.27 mW | 58.653 bn | 28.041 MB | 1376.1 MB |
+| bev_150 | 22,500 | 36,789,678 | 280,165,618 | 321,938,990 | 155.35 ms | 1.41% | 47641.94 mW | 80.719 bn | 35.594 MB | 1933.3 MB |
+| bev_175 | 30,625 | 42,178,201 | 429,300,291 | 477,780,161 | 213.35 ms | 1.36% | 31240.58 mW | 106.796 bn | 44.521 MB | 2577.5 MB |
+| **bev_200(base相当)** | **40,000** | 55,990,817 | 536,795,362 | 600,607,131 | **284.73 ms** | 1.30% | **64966.31 mW** | 136.884 bn | 54.821 MB | 3503.6 MB |
+
+観察:
+
+1. **§5.4のDDR退避境界を大きく超えた領域では、レイテンシ・電力ともに単調に悪化し続ける。** bev_75(21.38 ms)からbev_200(284.73 ms)まで、セル数7.1倍に対しレイテンシは13.3倍まで悪化している。MAC利用率も3.37%→1.30%まで低下し続ける。
+2. **`Power@30fps`は依然として滑らかには増加しない。** bev_150(47641.94 mW)がbev_175(31240.58 mW)より大きいなど、§5.4で確認した非単調性(タイル/レイヤー単位の離散的な配置判定によるジャギー)がこの規模でも再現している。
+3. **MACsのN_qに対する比(`MACs/N_q`)は単調に減少する**(bev_75: 4.72M、bev_100: 4.06M、bev_125: 3.75M、bev_150: 3.59M、bev_175: 3.49M、bev_200: 3.42M)。decoder側の固定コスト(bev_h_/bev_w_に依存しない)がモデル全体のMACsに占める割合が、bev格子が大きくなるほど相対的に小さくなるためと考えられる。
+4. **BEVFormer-tinyの他パラメータを保ったままBEVグリッドだけをbase相当(200×200)にすると、Digital側だけで284.73 msに達する。** これはBEVFormer-Tiny基準点(4.63 ms)の61倍であり、[07_ppa_improvement_challenges.md](../reverse-engineering/07_ppa_improvement_challenges.md)等で言及される33 ms制約を大きく超える。実際のBEVFormer-baseはencoder層数も6に増やす等、他の差異もあるため、これはBEVグリッドサイズ単独の影響のみを見た値である。
+5. 実装上の注記: `bev_h_`/`bev_w_`=200という規模でも、Cap'n Protoの512MBブロック上限(`run_transformer_config_point.py`の防御的パッチが対象としていたリスク)には抵触せず、全点が正常に完了した。
+
 ---
 
 ## 6. 制約・スコープ外
@@ -272,3 +293,4 @@ docker exec mythic_digital_ppa /mythic/pyvnnsdk-env/bin/python /work/sweep_trans
 - `tools/digital_ppa/transformer_config_sweep/` — 本レポートの実測に使用した新規ツール一式
 - `tools/digital_ppa/transformer_config_sweep/results/sweep_transformer_config.json` — §3・§4の数値の一次データ(9点)
 - `tools/digital_ppa/transformer_config_sweep/results/ocram_threshold_bisection.json` — §5.4の容量境界推定に使用した追加7点の一次データ
+- `tools/digital_ppa/transformer_config_sweep/results/bev_large_grid_sweep.json` — §5.5のBEVFormer-base相当グリッド外挿に使用した追加5点(bev=100/125/150/175/200)の一次データ
