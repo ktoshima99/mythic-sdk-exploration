@@ -208,6 +208,14 @@ MAC利用率(`efficiency_pct`)は3.4%〜16.1%の範囲に収まり、どの構�
 
 この境界の正確な発動条件(どのレイヤーの、どの容量チェックが、正確にどの閾値バイト数で発動するか)を確定するには、[05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §2で`Cycles per inference`ブロックに対して行ったのと同様の`gdb`によるディスアセンブル(`tools/digital_ppa/probe_vnnmap_cycles.py`の手法を`maxOCR`/`maxDDR`の出力箇所に適用する)が必要であり、これは本レポート・既存資料のいずれでも未着手である。
 
+**重要な限界: 上記13.622〜14.199 MBという境界は、`bevformer.cfg`で現在設定されている`OCRAM0=32MB`/`OCRAM1=1MB`/`pCluster=12`という特定のシミュレーション設定に対する境界であり、実際のM2000チップのデジタル側SRAM容量そのものではない。** 改めて調査した限り、OCRAM0/OCRAM1が実シリコンの物理容量と一致するという記述は、既存のReverse-engineeringドキュメント・実データシート([`Mythic_M2000_NPU_Datasheet_v0.3.pdf`](../../mythic_sdk/v26.05.2/doc/datasheets/Mythic_M2000_NPU_Datasheet_v0.3.pdf))のいずれにも存在しない:
+
+- [05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §6・§9.2は、デジタル側の面積(v-MPコア面積・SRAMマクロ面積/MB)が「SDK外の情報でしか見積もれない」「全デジタル評価の最大の未確定要素」と明記し、OCRAM0の現実的上限の確定を未解決課題として挙げている。
+- 実データシート`Mythic_M2000_NPU_Datasheet_v0.3.pdf`は"Shared SRAM"/"on-chip SRAM"を定性的に記述するのみで、容量の数値は一切記載していない。
+- 公式にサポートされるPPA Estimator(`Mythic_PPA_Estimator_Datasheet_v0.4.pdf` §5)は、SRAM容量を含むハードウェア構成を固定の「virtual platform」(例: 24Ace6Tile・48Ace12Tile)単位でのみ提供し、**ユーザーによるSRAM容量の自由設定は未リリースの将来機能**と明記している。本レポートで使用した`vnnmap`の`[sys]` cfg(`explore_model`経由)は、この公式プラットフォームの整合性チェックを経由しない、より低レベルの探索用インターフェースである(実際、`nMPs`についても実コンパイルパス`run_compilation`は`nMPs∈{1,4,8}`という実ハードウェア制約を強制するが、`explore_model`にはこの制約が一切なく、`bevformer.cfg`の`nMPs=288`はこの制約外で入力されている)。
+
+したがって、本節の閾値は「BEVFormer-Tiny + 現行cfgの設定」という条件下での実測値として解釈すべきであり、実チップのSRAM容量が32MB+1MBと異なる場合はこの境界も相応にずれる。実チップの真の容量は本レポート・既存資料のいずれからも確認できない**[未確認]**。
+
 ---
 
 ## 6. 制約・スコープ外
@@ -244,7 +252,9 @@ docker exec mythic_digital_ppa /mythic/pyvnnsdk-env/bin/python /work/sweep_trans
 - [doc/reverse-engineering/07_ppa_improvement_challenges.md](../reverse-engineering/07_ppa_improvement_challenges.md) §3-3・§4.2・§5.2 — 本レポートが実測で埋めた未測定事項の出典、SRAM/ACE境界比の枠組み
 - [doc/reverse-engineering/05_all_digital_ppa.md](../reverse-engineering/05_all_digital_ppa.md) §4.1・§5・§8/§9.2 — 基準実測値、電力コンポーネント別内訳の手法、efficiency%の制約、OCRAM0拡大によるDDR trafficの実測(§4.3)
 - [doc/reverse-engineering/06_hybrid_digital_and_structural_analysis.md](../reverse-engineering/06_hybrid_digital_and_structural_analysis.md) §2.1-2.3 — 基準実測値の再確認、電力コンポーネント別内訳の公開表
-- [doc/reverse-engineering/01_compilation.md](../reverse-engineering/01_compilation.md) §3.4.1・§3.4.3 — OCRAM0/OCRAM1のcfgキー定義、OCR→DDR切り替えを示す文字列リテラル(`Cut before layer...`等)
+- [doc/reverse-engineering/01_compilation.md](../reverse-engineering/01_compilation.md) §3.4.1・§3.4.3 — OCRAM0/OCRAM1のcfgキー定義、OCR→DDR切り替えを示す文字列リテラル(`Cut before layer...`等)、`nMPs∈{1,4,8}`という実コンパイルパスの制約と`explore_model`の無制約性の対比
+- `mythic_sdk/v26.05.2/doc/datasheets/Mythic_M2000_NPU_Datasheet_v0.3.pdf` — 実データシート。SRAMは定性的記述のみで容量数値は非公開
+- `mythic_sdk/v26.05.2/doc/datasheets/Mythic_PPA_Estimator_Datasheet_v0.4.pdf` §5 — 公式PPA Estimatorが固定virtual platform単位でのみハードウェア構成を提供し、SRAM容量の自由設定は未リリース機能である旨の記述
 - `tools/digital_ppa/run_full_digital.py`・`tools/digital_ppa/sweep_system_config.py`・`tools/digital_ppa/probe_vnnmap_cycles.py` — 本レポートのツールが模倣したイディオム、および§5.4で今後必要とされるディスアセンブル手法の参照元
 - `tools/digital_ppa/transformer_config_sweep/` — 本レポートの実測に使用した新規ツール一式
 - `tools/digital_ppa/transformer_config_sweep/results/sweep_transformer_config.json` — §3・§4の数値の一次データ(9点)
