@@ -1,0 +1,56 @@
+[
+  {
+    "tag": "nMPs_72",
+    "mac_cycles": 85532638,
+    "non_mac_cycles": 31266264,
+    "exposed_dma_cycles": 88452141,
+    "total_cycles": 205251043,
+    "eff_latency_ms": 85.2,
+    "power_30fps_mW": 63548.68
+  },
+  {
+    "tag": "nMPs_36",
+    "mac_cycles": 164772017,
+    "non_mac_cycles": 62526636,
+    "exposed_dma_cycles": 89947438,
+    "total_cycles": 317246091,
+    "eff_latency_ms": 141.57,
+    "power_30fps_mW": 63423.75
+  },
+  {
+    "tag": "nMPs_144_readDiv32",
+    "mac_cycles": 61308216,
+    "non_mac_cycles": 15636056,
+    "exposed_dma_cycles": 12617588,
+    "total_cycles": 89561860,
+    "eff_latency_ms": 44.25,
+    "power_30fps_mW": 64306.0
+  },
+  {
+    "tag": "nMPs_72_readDiv32",
+    "mac_cycles": 85532638,
+    "non_mac_cycles": 31266264,
+    "exposed_dma_cycles": 8366110,
+    "total_cycles": 125165012,
+    "eff_latency_ms": 62.33,
+    "power_30fps_mW": 63548.68
+  },
+  {
+    "tag": "nMPs_36_readDiv32",
+    "mac_cycles": 164772017,
+    "non_mac_cycles": 62526636,
+    "exposed_dma_cycles": 8422898,
+    "total_cycles": 235721551,
+    "eff_latency_ms": 118.13,
+    "power_30fps_mW": 63423.75
+  },
+  {
+    "tag": "nMPs_36_readDiv64",
+    "mac_cycles": 164772017,
+    "non_mac_cycles": 62526636,
+    "exposed_dma_cycles": 3699088,
+    "total_cycles": 230997741,
+    "eff_latency_ms": 116.56,
+    "power_30fps_mW": 63423.75
+  }
+]

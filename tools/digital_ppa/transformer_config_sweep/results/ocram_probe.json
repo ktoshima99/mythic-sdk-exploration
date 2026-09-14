@@ -1,0 +1,101 @@
+[
+  {
+    "tag": "ocram0_32M_baseline",
+    "mac_cycles": 55990817,
+    "non_mac_cycles": 7820952,
+    "exposed_dma_cycles": 536795362,
+    "total_cycles": 600607131,
+    "eff_latency_ms": 284.73,
+    "power_30fps_mW": 64966.31,
+    "ddr_read_MB": 31462.1,
+    "ddr_write_MB": 3503.6
+  },
+  {
+    "tag": "ocram0_128M",
+    "mac_cycles": 52686712,
+    "non_mac_cycles": 7820964,
+    "exposed_dma_cycles": 557493002,
+    "total_cycles": 618000678,
+    "eff_latency_ms": 262.4,
+    "power_30fps_mW": 24239.09,
+    "ddr_read_MB": 6304.8,
+    "ddr_write_MB": 2744.0
+  },
+  {
+    "tag": "ocram0_512M",
+    "mac_cycles": 52058659,
+    "non_mac_cycles": 7820964,
+    "exposed_dma_cycles": 14708280,
+    "total_cycles": 74587903,
+    "eff_latency_ms": 30.59,
+    "power_30fps_mW": 7624.98,
+    "ddr_read_MB": 217.4,
+    "ddr_write_MB": 117.2
+  },
+  {
+    "tag": "ocram0_1G",
+    "mac_cycles": 52058659,
+    "non_mac_cycles": 7820964,
+    "exposed_dma_cycles": 1043268,
+    "total_cycles": 60922891,
+    "eff_latency_ms": 30.59,
+    "power_30fps_mW": 7161.65,
+    "ddr_read_MB": 100.2,
+    "ddr_write_MB": 0.0
+  },
+  {
+    "tag": "ocram0_2G",
+    "mac_cycles": 52058659,
+    "non_mac_cycles": 7820964,
+    "exposed_dma_cycles": 1043268,
+    "total_cycles": 60922891,
+    "eff_latency_ms": 30.59,
+    "power_30fps_mW": 7161.65,
+    "ddr_read_MB": 100.2,
+    "ddr_write_MB": 0.0
+  },
+  {
+    "tag": "ocram1_16M",
+    "mac_cycles": 55990817,
+    "non_mac_cycles": 7820952,
+    "exposed_dma_cycles": 497692646,
+    "total_cycles": 561504415,
+    "eff_latency_ms": 271.77,
+    "power_30fps_mW": 29238.14,
+    "ddr_read_MB": 9125.1,
+    "ddr_write_MB": 2589.0
+  },
+  {
+    "tag": "ocram1_64M",
+    "mac_cycles": 53983778,
+    "non_mac_cycles": 7820956,
+    "exposed_dma_cycles": 18905756,
+    "total_cycles": 80710490,
+    "eff_latency_ms": 40.49,
+    "power_30fps_mW": 13444.75,
+    "ddr_read_MB": 1717.5,
+    "ddr_write_MB": 1305.0
+  },
+  {
+    "tag": "ocram0_512M_nmps144",
+    "mac_cycles": 55573816,
+    "non_mac_cycles": 15636064,
+    "exposed_dma_cycles": 14708280,
+    "total_cycles": 85918160,
+    "eff_latency_ms": 36.39,
+    "power_30fps_mW": 5902.83,
+    "ddr_read_MB": 204.7,
+    "ddr_write_MB": 117.2
+  },
+  {
+    "tag": "ocram0_2G_nmps144",
+    "mac_cycles": 55573816,
+    "non_mac_cycles": 15636064,
+    "exposed_dma_cycles": 1043268,
+    "total_cycles": 72253148,
+    "eff_latency_ms": 36.39,
+    "power_30fps_mW": 5439.51,
+    "ddr_read_MB": 87.5,
+    "ddr_write_MB": 0.0
+  }
+]
