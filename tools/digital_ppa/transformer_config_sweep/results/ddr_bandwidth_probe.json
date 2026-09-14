@@ -1,0 +1,58 @@
+[
+  {
+    "tag": "baseline",
+    "total_cycles": 600607131,
+    "exposed_dma_cycles": 536795362,
+    "eff_latency_ms": 284.73,
+    "power_30fps_mW": 64966.31
+  },
+  {
+    "tag": "readDivDDR_8",
+    "total_cycles": 330023186,
+    "exposed_dma_cycles": 266211417,
+    "eff_latency_ms": 158.26,
+    "power_30fps_mW": 64966.31
+  },
+  {
+    "tag": "readDivDDR_16",
+    "total_cycles": 194847822,
+    "exposed_dma_cycles": 131036053,
+    "eff_latency_ms": 95.08,
+    "power_30fps_mW": 64966.31
+  },
+  {
+    "tag": "readDivDDR_32",
+    "total_cycles": 128122387,
+    "exposed_dma_cycles": 64310618,
+    "eff_latency_ms": 63.5,
+    "power_30fps_mW": 64966.31
+  },
+  {
+    "tag": "readLatencyDDR_20",
+    "total_cycles": 598949691,
+    "exposed_dma_cycles": 535137922,
+    "eff_latency_ms": 284.52,
+    "power_30fps_mW": 64966.31
+  },
+  {
+    "tag": "readLatencyDDR_1",
+    "total_cycles": 598774739,
+    "exposed_dma_cycles": 534962970,
+    "eff_latency_ms": 284.5,
+    "power_30fps_mW": 64966.31
+  },
+  {
+    "tag": "writeDivDDR_4",
+    "total_cycles": 601845822,
+    "exposed_dma_cycles": 538034053,
+    "eff_latency_ms": 285.34,
+    "power_30fps_mW": 64966.31
+  },
+  {
+    "tag": "writeDivDDR_16",
+    "total_cycles": 606800586,
+    "exposed_dma_cycles": 542988817,
+    "eff_latency_ms": 287.75,
+    "power_30fps_mW": 64966.31
+  }
+]
