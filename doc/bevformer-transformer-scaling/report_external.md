@@ -51,16 +51,35 @@ BEVFormer-Tiny Transformerの既存PPA実測(レイテンシ・電力)が1点の
 
 **この構成は本レポートを通じて一切変更していない。** レイテンシ(ms)・電力(mW)の絶対値は、特にクロック周波数・演算コア数に強く依存するため、異なるハードウェア構成を仮定した場合はこれらの絶対値は変わる。
 
-### 1.2 各パラメータの物理的な意味(公式データシートに基づく推測)
+### 1.2 各パラメータの物理的な意味(公式資料に基づく)
 
-**重要な限界: 以下はいずれも、データシートの記述とSDKの`[sys]` configキー名の意味的な一致からの推測であり、両者が実装レベルで同一であるという保証・確認ではない。** 具体的には:
+上記パラメータが実際のM2000チップの何に対応するかを、Mythic社が公開している3つの公式資料 — `Mythic_M2000_NPU_Datasheet_v0.3.pdf`(NPUデータシート)・`Mythic_PPA_Estimator_Datasheet_v0.4.pdf`(PPA Estimatorデータシート)・`GEN2 User Guide.pdf`(SDKユーザーガイド、SDK Version v26.05.2に対応) — を読んで確認した。いずれもMythic社の公式資料であり、SDKに同梱されたバイナリの逆アセンブル・文字列抽出は用いていない。
 
-- データシートはMythic社の製品・アーキテクチャ説明であり、本レポートで使用しているSDK(`vnnmap`)のこのバージョンが、データシートの記述するアーキテクチャを忠実に実装していることを確認する手段は無い。
-- `Mythic_PPA_Estimator_Datasheet_v0.4.pdf` §5は、公式にサポートされる「PPA Estimator」というツールのユーザーインターフェースが、ハードウェア構成(virtual platform)をユーザーに直接指定させず、コンパイラの出力から自動的に抽出していると明記している。本レポートで実際に使用してきたのは、この制約を経由しない、より低レベルな`vnnmap`への`[sys]` cfg直接指定(実チップの現実性チェックが一切無い経路、`nMPs=4608`のような値も無条件に受理される)である。データシート§7の"Digital NPU Cores"/"Digital NPU Frequency"はあくまで(制約された)公式PPA Estimatorの**出力欄**としての記載であり、本レポートで直接操作している`nMPs`/`frequency`というcfgキーとコードレベルで同一の変数であるという確認は取れていない。
-- この対応付けは、両文書の用語(「Digital NPU Cores」≒`nMPs`等)が意味的に一致するだろうという、筆者による推測に基づくものであり、Mythic社による明示的な対応表やSDKソースコードでの確認によるものではない。
-- `Mythic_PPA_Estimator_Datasheet_v0.4.pdf` §1 Overview自身が、この推定器を「cycle-accurateなRTLシミュレーションではなく、高レベルの抽象化を行った機能シミュレータであり、タイミング精度に内在的な限界がある」と明記している。したがって、`nMPs`等を変化させた際の実測挙動(§5.7等)が実チップの物理的挙動を正確に反映しているという保証もない。
+**0. `nMPs`・`frequency`の対応は、用語の一致からの推測ではなく、実行例による厳密な数値クロスチェックで確認できた。** `GEN2 User Guide.pdf` §9.4は、公式CLIコマンド`mythic-ppa-estimators`をResNet-50のコンパイル済みアーティファクトに対して実行した際の**実際の出力例**を掲載している:
 
-以上を踏まえた上で、上記パラメータが実際のM2000チップの何に対応するかを、Mythic社が公開している`Mythic_M2000_NPU_Datasheet_v0.3.pdf`(NPUデータシート)・`Mythic_PPA_Estimator_Datasheet_v0.4.pdf`(PPA Estimatorデータシート)を読んで検討した。いずれもMythic社の公式資料であり、SDKに同梱されたバイナリの逆アセンブル・文字列抽出は用いていない。
+```
+mythic-ppa-estimators --estimate-performance --estimate-power resnet50_compiled.tar.gz
+...
+| Digital NPU Cores                                                    |     1  |
+| Digital NPU Frequency                                                | 1,000 MHz |
+```
+
+一方、SDKに同梱されている`system_configs/resnet50.cfg`(本レポートがBEVFormer-Tinyに使っている`bevformer.cfg`と同じ形式・並列に存在するファイル)には、以下が記載されている:
+
+```
+[sys]
+nMPs=1
+...
+frequency=1000000000
+```
+
+**`nMPs=1`/`frequency=1000000000`(1,000 MHz)という値が、公式CLIが実際に報告する"Digital NPU Cores: 1"/"Digital NPU Frequency: 1,000 MHz"と完全に一致する。** これは用語の類似からの推測ではなく、独立に読んだ2つの資料(cfgファイルと実行例ログ)の数値が厳密に一致するという確認である。したがって、**`nMPs`はv-MP(デジタル演算コア)の数、`frequency`はそのv-MPの動作クロック周波数を表すことが、この2資料の対応関係から確認できた**。
+
+同じ実行例から、以下も直接確認できる:
+
+- **アナログとデジタルは完全に独立した2つの推定であり、結合値は単純な合計である。** 出力例では"Analog NPU Total Estimated Processing Time"=0.44 ms、"Digital Estimated Frame Processing Time"=0.11 ms、"Combined Analog + Digital NPU Latency"=0.55 msであり、0.44+0.11=0.55と厳密に一致する。出力直後の注記にも"Analog and Digital compute power is currently estimated based on **separate ONNX sub-graphs**"と明記されている。
+- **チップは3Dスタック構造(アナログ28nm・デジタル5nm)であることが、出力例の"Process Nodes"欄に直接記載されている**("Process Nodes | Analog 28nm, Digital 5nm")。
+- **`mythic-ppa-estimators`自体には、ユーザーがハードウェア構成(`nMPs`・`frequency`等)を指定するコマンドラインオプションが存在しない。** `--help`の出力は`[-h] [--functional-simulation] [--estimate-performance] [--estimate-power] [--power-inference-rate RATE] [--allow-fps-over-max] model_artifact_path`のみであり、HW構成を渡す引数は無い。つまり`nMPs`・`frequency`等の値は、**コンパイル済みアーティファクトに焼き込まれた値がそのまま報告されているだけ**であり、`mythic-ppa-estimators`を実行するユーザー自身がこれらの値を自由に選べる訳ではない。本レポートで実際に行ってきたこと(§5.6・§5.7で`nMPs`を4608まで、`OCRAM0`を1 GBまで変えるなど)は、この公式CLIの外側にある、より低レベルな`vnnmap --system_cfg`直接指定によるものであり、公式CLIが実運用で生成しうる値の範囲を超えている可能性がある。
 
 **1. チップの物理構成。** NPUデータシート§3.1によれば、M2000は以下の階層構造を持つ:
 
@@ -75,22 +94,13 @@ Mythic M2000 NPU chiplet
   └─ SoC Subsystem(DPU・Control Processor・共有SRAM・ホストインターフェース)
 ```
 
-重要な点として、**M2000チップ自体にはDRAMコントローラが存在しない**(NPUデータシートFigure 3のブロック図で、DRAM Controllerは"Host SoC"側にのみ描かれている)。M2000チップ側のメモリは全て「SRAM」(NPU Tile内の共有SRAM、SoC Subsystem内の共有SRAM)と呼ばれており、DRAMという語はホスト側にしか出てこない。ここから、本レポートの`[sys]` configにある`DDR`パラメータは、M2000チップ上のメモリではなく、**PCIe経由で接続されたホスト側のDRAMを指している可能性が高い**と考えられる(データシートに明示的な対応記述はなく、ブロック図からの推論)。
+重要な点として、**M2000チップ自体にはDRAMコントローラが存在しない**(NPUデータシートFigure 3のブロック図で、DRAM Controllerは"Host SoC"側にのみ描かれている)。M2000チップ側のメモリは全て「SRAM」(NPU Tile内の共有SRAM、SoC Subsystem内の共有SRAM)と呼ばれており、DRAMという語はホスト側にしか出てこない。ここから、本レポートの`[sys]` configにある`DDR`パラメータは、M2000チップ上のメモリではなく、**PCIe経由で接続されたホスト側のDRAMを指している可能性が高い**と考えられる(データシートに明示的な対応記述はなく、ブロック図からの推論。なお`GEN2 User Guide.pdf`のResNet-50実行例の注記は「PCIe転送オーバーヘッドは含まない」と明記しており、これは本レポートの`DDR`パラメータが表すオーバーヘッドとは別の話である可能性もあり、完全には整理できていない)。
 
-**2. `nMPs`・`frequency`は、PPA Estimatorデータシートの以下の出力項目に対応すると推測される。** PPA Estimatorデータシート§7(Estimator Outputs)には、以下の項目が記載されている:
+**2. ACEタイル構成も実行例で確認できる。** GEN2 User GuideのResNet-50実行例は"Number of ACEs: 24"・"Minimum Theoretical ACE Execution Time (With Even Parallelization Across 24 ACEs)"と報告しており、これはPPA Estimatorデータシート§5の"24Ace6Tile: 24 ACEs arranged in 6 ACE Tiles"というvirtual platform名と整合する(ACE Tileは4 ACEずつのグループ)。
 
-| データシート記載の項目 | 説明(データシート原文の要約) |
-|---|---|
-| Digital NPU Cores | ONNXファイルのデジタル部分を処理するVideantis v-MPコアの総数 |
-| Digital NPU Frequency | 性能推定に使用されるVideantisデジタル演算のクロック周波数 |
+**未確認のまま残る事項**: `mCluster`・`pCluster`・`xTile`という名称は、いずれの公式資料にも登場しない。`nMPs`(=288、BEVFormer-Tinyの場合)が`pCluster`(=12)× 24という形に分解できる(24 v-MP/クラスタ相当)ことから、v-MPコアを内部的にグループ化するための`vnnmap`(デジタル側シミュレータ)固有のスケジューリング単位である可能性はあるが、これを裏付ける公式記述はなく、確認できていない。また、`OCRAM0`/`OCRAM1`という2つのオンチップメモリ容量パラメータが、NPU Tile内の共有SRAMとSoC Subsystem内の共有SRAMという、データシートの図に描かれている2つの異なるSRAMプールにそれぞれ対応するのではないかという仮説も考えられるが、これも名称レベルでの対応確認はできていない。
 
-この用語(「Digital NPU Cores」「Digital NPU Frequency」)は、本レポートで使っている`nMPs`・`frequency`と意味的に一致するように見える。**そのため`nMPs`はv-MP(デジタル演算コア)の数、`frequency`はそのv-MPの動作クロック周波数を表すのではないかと推測されるが**、上記の限界(§1.2冒頭)の通り、これはあくまで用語の一致からの推測であり、コードレベルでの確認ではない。
-
-**3. データシート自身は、デジタルとアナログを完全に独立した2つの推定エンジンとして説明している。** PPA Estimatorデータシート§6.1は、アナログ(ACE)側のタイムステップベースのレイテンシモデルのみを記述しており、"Note that latency for the digital layers at the beginning and end of the ONNX file are accounted for separately"(デジタル層のレイテンシは別途計上される)と明記している。§7の"Combined Analog + Digital NPU Latency"は、この2つの独立した推定値を単純に合算したものである。すなわち、データシートが説明する(制約された)公式PPA Estimatorにおいて、アナログ側の推定器はデジタルNPUの内部動作を一切モデル化しておらず、両者は完全に別系統の計算とされている。
-
-**4. データシートは、チップが3Dスタック構造(アナログ28nm・デジタル5nm)であると説明している。** PPA Estimatorデータシート§6.3に記載: 面積推定は「アナログダイを28nm、デジタルダイを5nmで製造する3Dウェハスタッキング技術」に基づいている("an analog die fabricated in 28nm and a digital die fabricated in 5nm")。本レポートで対象としているBEVFormer-TinyのTransformer部分(v-MPで実行されるデジタル演算)が、実際にこの5nmダイ側で動作しているかどうかも、SDKの実装を確認する手段が無いため、データシートの記述からの推測にとどまる。
-
-**未確認のまま残る事項**: `mCluster`・`pCluster`・`xTile`という名称は、いずれのデータシートにも登場しない。`nMPs`(=288)が`pCluster`(=12)× 24という形に分解できる(24 v-MP/クラスタ相当)ことから、v-MPコアを内部的にグループ化するための`vnnmap`(デジタル側シミュレータ)固有のスケジューリング単位である可能性はあるが、これを裏付ける公式記述はなく、確認できていない。また、`OCRAM0`/`OCRAM1`という2つのオンチップメモリ容量パラメータが、NPU Tile内の共有SRAMとSoC Subsystem内の共有SRAMという、データシートの図に描かれている2つの異なるSRAMプールにそれぞれ対応するのではないかという仮説も考えられるが、これも名称レベルでの対応確認はできていない。
+さらに、`nMPs`/`frequency`の対応自体が上記のように確認できた一方で、**`mythic-ppa-estimators`(公式CLI)というシミュレータそのものが実チップの物理的挙動を正確に反映しているかどうかは別問題として残る。** `Mythic_PPA_Estimator_Datasheet_v0.4.pdf` §1 Overviewは、この推定器を「cycle-accurateなRTLシミュレーションではなく、高レベルの抽象化を行った機能シミュレータであり、タイミング精度・電力推定・コンパイラ統合には内在的な限界がある」と明記している。したがって、本レポートの§5.6・§5.7で`nMPs`・`OCRAM0`等を変化させた際の実測挙動が、実チップの物理的挙動を正確に反映しているという保証もない。
 
 ---
 
@@ -358,7 +368,7 @@ SDKの設定ファイルは、DDR転送に関する帯域相当のパラメー�
 | 上記+`nMPs`増加 | 25.14 ms | `OCRAM0` 32×、`nMPs` 16× |
 | 上記+`frequency`向上 | 4.63 ms相当 | `OCRAM0` 32×、`nMPs` 16×、`frequency` 5.3× |
 
-理論上到達可能な組み合わせは存在するが、この組み合わせ(`OCRAM0` 32倍・`nMPs` 16倍・`frequency` 5.3倍)が実際のチップとして物理的に妥当な構成であるかどうかは、§5.4-§5.5で述べた理由(SDKが公開しているデータシートにはオンチップメモリの容量数値・演算コア数・クロック周波数の実チップ上限が記載されていない)により確認できていない。とりわけ、大規模な並列演算アレイを持つデジタル回路で10 GHzを超えるクロック周波数は一般的な実現例が乏しく、この点は特に妥当性への疑問が大きい。
+理論上到達可能な組み合わせは存在するが、この組み合わせ(`OCRAM0` 32倍・`nMPs` 16倍・`frequency` 5.3倍)が実際のチップとして物理的に妥当な構成であるかどうかは、SDKが公開しているデータシートにオンチップメモリの容量数値・演算コア数・クロック周波数の実チップ上限が記載されていないため確認できていない。さらに、§1.2で確認した通り、公式CLI(`mythic-ppa-estimators`)自体にはユーザーがこれらのHW構成値を指定するオプションが存在せず、コンパイル済みアーティファクトに焼き込まれた値が報告されるのみである。本節の`nMPs`・`OCRAM0`を直接書き換える手法は、この公式CLIの外側にある低レベルな`vnnmap --system_cfg`直接指定によるものであり、そもそも公式の運用フローが生成しうる値の範囲を超えている可能性が高い。とりわけ、大規模な並列演算アレイを持つデジタル回路で10 GHzを超えるクロック周波数は一般的な実現例が乏しく、この点は特に妥当性への疑問が大きい。
 
 したがって、より正確な結論は次のようになる: **DDR帯域の改善だけでは目標(4.63 ms相当)に到達できないが、`OCRAM0`の拡大を組み合わせれば、理論上到達可能な設定の組み合わせは存在する。ただし、その具体的な容量・演算コア数・クロック周波数の組み合わせが実チップとして妥当かどうかは、本レポートの範囲では確認できない。**
 
