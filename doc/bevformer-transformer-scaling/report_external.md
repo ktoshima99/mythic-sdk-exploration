@@ -51,9 +51,16 @@ BEVFormer-Tiny Transformerの既存PPA実測(レイテンシ・電力)が1点の
 
 **この構成は本レポートを通じて一切変更していない。** レイテンシ(ms)・電力(mW)の絶対値は、特にクロック周波数・演算コア数に強く依存するため、異なるハードウェア構成を仮定した場合はこれらの絶対値は変わる。
 
-### 1.2 各パラメータの物理的な意味(公式データシートに基づく)
+### 1.2 各パラメータの物理的な意味(公式データシートに基づく推測)
 
-上記パラメータが実際のM2000チップの何に対応するかを、Mythic社が公開している`Mythic_M2000_NPU_Datasheet_v0.3.pdf`(NPUデータシート)・`Mythic_PPA_Estimator_Datasheet_v0.4.pdf`(PPA Estimatorデータシート)を読んで確認した。いずれもMythic社の公式資料であり、SDKに同梱されたバイナリの逆アセンブル・文字列抽出は用いていない。
+**重要な限界: 以下はいずれも、データシートの記述とSDKの`[sys]` configキー名の意味的な一致からの推測であり、両者が実装レベルで同一であるという保証・確認ではない。** 具体的には:
+
+- データシートはMythic社の製品・アーキテクチャ説明であり、本レポートで使用しているSDK(`vnnmap`)のこのバージョンが、データシートの記述するアーキテクチャを忠実に実装していることを確認する手段は無い。
+- `Mythic_PPA_Estimator_Datasheet_v0.4.pdf` §5は、公式にサポートされる「PPA Estimator」というツールのユーザーインターフェースが、ハードウェア構成(virtual platform)をユーザーに直接指定させず、コンパイラの出力から自動的に抽出していると明記している。本レポートで実際に使用してきたのは、この制約を経由しない、より低レベルな`vnnmap`への`[sys]` cfg直接指定(実チップの現実性チェックが一切無い経路、`nMPs=4608`のような値も無条件に受理される)である。データシート§7の"Digital NPU Cores"/"Digital NPU Frequency"はあくまで(制約された)公式PPA Estimatorの**出力欄**としての記載であり、本レポートで直接操作している`nMPs`/`frequency`というcfgキーとコードレベルで同一の変数であるという確認は取れていない。
+- この対応付けは、両文書の用語(「Digital NPU Cores」≒`nMPs`等)が意味的に一致するだろうという、筆者による推測に基づくものであり、Mythic社による明示的な対応表やSDKソースコードでの確認によるものではない。
+- `Mythic_PPA_Estimator_Datasheet_v0.4.pdf` §1 Overview自身が、この推定器を「cycle-accurateなRTLシミュレーションではなく、高レベルの抽象化を行った機能シミュレータであり、タイミング精度に内在的な限界がある」と明記している。したがって、`nMPs`等を変化させた際の実測挙動(§5.7等)が実チップの物理的挙動を正確に反映しているという保証もない。
+
+以上を踏まえた上で、上記パラメータが実際のM2000チップの何に対応するかを、Mythic社が公開している`Mythic_M2000_NPU_Datasheet_v0.3.pdf`(NPUデータシート)・`Mythic_PPA_Estimator_Datasheet_v0.4.pdf`(PPA Estimatorデータシート)を読んで検討した。いずれもMythic社の公式資料であり、SDKに同梱されたバイナリの逆アセンブル・文字列抽出は用いていない。
 
 **1. チップの物理構成。** NPUデータシート§3.1によれば、M2000は以下の階層構造を持つ:
 
@@ -70,18 +77,18 @@ Mythic M2000 NPU chiplet
 
 重要な点として、**M2000チップ自体にはDRAMコントローラが存在しない**(NPUデータシートFigure 3のブロック図で、DRAM Controllerは"Host SoC"側にのみ描かれている)。M2000チップ側のメモリは全て「SRAM」(NPU Tile内の共有SRAM、SoC Subsystem内の共有SRAM)と呼ばれており、DRAMという語はホスト側にしか出てこない。ここから、本レポートの`[sys]` configにある`DDR`パラメータは、M2000チップ上のメモリではなく、**PCIe経由で接続されたホスト側のDRAMを指している可能性が高い**と考えられる(データシートに明示的な対応記述はなく、ブロック図からの推論)。
 
-**2. `nMPs`・`frequency`の物理的対応が確認できた。** PPA Estimatorデータシート§7(Estimator Outputs)に、以下の項目が明記されている:
+**2. `nMPs`・`frequency`は、PPA Estimatorデータシートの以下の出力項目に対応すると推測される。** PPA Estimatorデータシート§7(Estimator Outputs)には、以下の項目が記載されている:
 
 | データシート記載の項目 | 説明(データシート原文の要約) |
 |---|---|
 | Digital NPU Cores | ONNXファイルのデジタル部分を処理するVideantis v-MPコアの総数 |
 | Digital NPU Frequency | 性能推定に使用されるVideantisデジタル演算のクロック周波数 |
 
-この用語(「Digital NPU Cores」「Digital NPU Frequency」)は、本レポートで使っている`nMPs`・`frequency`と意味が一致する。したがって、**`nMPs`はv-MP(デジタル演算コア)の数、`frequency`はそのv-MPの動作クロック周波数を表す**ことが、データシートの用語対応から確認できる。
+この用語(「Digital NPU Cores」「Digital NPU Frequency」)は、本レポートで使っている`nMPs`・`frequency`と意味的に一致するように見える。**そのため`nMPs`はv-MP(デジタル演算コア)の数、`frequency`はそのv-MPの動作クロック周波数を表すのではないかと推測されるが**、上記の限界(§1.2冒頭)の通り、これはあくまで用語の一致からの推測であり、コードレベルでの確認ではない。
 
-**3. デジタルとアナログは完全に独立した2つの推定エンジンである。** PPA Estimatorデータシート§6.1は、アナログ(ACE)側のタイムステップベースのレイテンシモデルのみを記述しており、"Note that latency for the digital layers at the beginning and end of the ONNX file are accounted for separately"(デジタル層のレイテンシは別途計上される)と明記している。§7の"Combined Analog + Digital NPU Latency"は、この2つの独立した推定値を単純に合算したものである。すなわち、アナログ側の推定器はデジタルNPUの内部動作を一切モデル化しておらず、両者は完全に別系統の計算である。
+**3. データシート自身は、デジタルとアナログを完全に独立した2つの推定エンジンとして説明している。** PPA Estimatorデータシート§6.1は、アナログ(ACE)側のタイムステップベースのレイテンシモデルのみを記述しており、"Note that latency for the digital layers at the beginning and end of the ONNX file are accounted for separately"(デジタル層のレイテンシは別途計上される)と明記している。§7の"Combined Analog + Digital NPU Latency"は、この2つの独立した推定値を単純に合算したものである。すなわち、データシートが説明する(制約された)公式PPA Estimatorにおいて、アナログ側の推定器はデジタルNPUの内部動作を一切モデル化しておらず、両者は完全に別系統の計算とされている。
 
-**4. チップは3Dスタック構造(アナログ28nm・デジタル5nm)。** PPA Estimatorデータシート§6.3に明記: 面積推定は「アナログダイを28nm、デジタルダイを5nmで製造する3Dウェハスタッキング技術」に基づいている("an analog die fabricated in 28nm and a digital die fabricated in 5nm")。本レポートで対象としているBEVFormer-TinyのTransformer部分(v-MPで実行されるデジタル演算)は、この5nmダイ側で動作する。
+**4. データシートは、チップが3Dスタック構造(アナログ28nm・デジタル5nm)であると説明している。** PPA Estimatorデータシート§6.3に記載: 面積推定は「アナログダイを28nm、デジタルダイを5nmで製造する3Dウェハスタッキング技術」に基づいている("an analog die fabricated in 28nm and a digital die fabricated in 5nm")。本レポートで対象としているBEVFormer-TinyのTransformer部分(v-MPで実行されるデジタル演算)が、実際にこの5nmダイ側で動作しているかどうかも、SDKの実装を確認する手段が無いため、データシートの記述からの推測にとどまる。
 
 **未確認のまま残る事項**: `mCluster`・`pCluster`・`xTile`という名称は、いずれのデータシートにも登場しない。`nMPs`(=288)が`pCluster`(=12)× 24という形に分解できる(24 v-MP/クラスタ相当)ことから、v-MPコアを内部的にグループ化するための`vnnmap`(デジタル側シミュレータ)固有のスケジューリング単位である可能性はあるが、これを裏付ける公式記述はなく、確認できていない。また、`OCRAM0`/`OCRAM1`という2つのオンチップメモリ容量パラメータが、NPU Tile内の共有SRAMとSoC Subsystem内の共有SRAMという、データシートの図に描かれている2つの異なるSRAMプールにそれぞれ対応するのではないかという仮説も考えられるが、これも名称レベルでの対応確認はできていない。
 
