@@ -1,0 +1,85 @@
+{
+  "tag": "bev_45_rerun",
+  "params": {
+    "tag": "bev_45_rerun",
+    "out": "/work/transformer_config_sweep/sweep_out/bev_45_rerun",
+    "num_layers_enc": 3,
+    "num_layers_dec": 6,
+    "bev_h": 45,
+    "bev_w": 45,
+    "embed_dims": 256
+  },
+  "error": null,
+  "cycles": {
+    "mac_cycles": 6002557,
+    "non_mac_cycles": 1665285,
+    "exposed_dma_cycles": 167712,
+    "total_cycles": 7835554
+  },
+  "performance": {
+    "effective_fps": 251.15,
+    "effective_latency_ms": 3.98,
+    "efficiency_pct": 10.22
+  },
+  "power_aggregate": {
+    "power_eff_fps_mW": 7747.88,
+    "power_30fps_mW": 925.49
+  },
+  "power_components": {
+    "baseline_power_eff_fps_mW": 7747.88,
+    "baseline_power_30fps_mW": 925.49,
+    "components": {
+      "mac_unit": {
+        "power_eff_fps_zeroed_mW": 6550.84,
+        "delta_mW": 1197.04,
+        "fraction_of_total": 0.1544990371559704,
+        "delta_mW_at_30fps": 142.98731389747905
+      },
+      "non_mac_unit": {
+        "power_eff_fps_zeroed_mW": 5228.08,
+        "delta_mW": 2519.8,
+        "fraction_of_total": 0.3252244484942978,
+        "delta_mW_at_30fps": 300.9919748369877
+      },
+      "dmem_imem": {
+        "power_eff_fps_zeroed_mW": 4913.96,
+        "delta_mW": 2833.92,
+        "fraction_of_total": 0.3657671517886183,
+        "delta_mW_at_30fps": 338.5138413088484
+      },
+      "ocram": {
+        "power_eff_fps_zeroed_mW": 7283.45,
+        "delta_mW": 464.4300000000003,
+        "fraction_of_total": 0.05994284888253307,
+        "delta_mW_at_30fps": 55.47650721229553
+      },
+      "ddr": {
+        "power_eff_fps_zeroed_mW": 7015.17,
+        "delta_mW": 732.71,
+        "fraction_of_total": 0.09456909502986624,
+        "delta_mW_at_30fps": 87.52275175919091
+      },
+      "bus_noc": {
+        "power_eff_fps_zeroed_mW": 7747.88,
+        "delta_mW": 0.0,
+        "fraction_of_total": 0.0,
+        "delta_mW_at_30fps": 0.0
+      }
+    }
+  },
+  "model_stats": {
+    "macs_bn": 15.005,
+    "model_size_MB": 13.1
+  },
+  "memory": {
+    "max_ddr_kB": 21731.1,
+    "max_ddr_weights_kB": 2978.07,
+    "max_ddr_io_kB": 18753.03,
+    "max_ocr_kB": 999.88,
+    "max_ocr_weights_kB": 353.5,
+    "max_ocr_io_kB": 646.25,
+    "ddr_read_MB": 58.0,
+    "ddr_write_MB": 0.0
+  },
+  "vidir_path": "/work/transformer_config_sweep/sweep_out/bev_45_rerun/BevformerTiny.vidir"
+}

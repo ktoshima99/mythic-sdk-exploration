@@ -1,0 +1,342 @@
+[
+  {
+    "tag": "bev_30",
+    "params": {
+      "tag": "bev_30",
+      "out": "/work/transformer_config_sweep/sweep_out/bev_30",
+      "num_layers_enc": 3,
+      "num_layers_dec": 6,
+      "bev_h": 30,
+      "bev_w": 30,
+      "embed_dims": 256
+    },
+    "error": null,
+    "cycles": {
+      "mac_cycles": 4681588,
+      "non_mac_cycles": 1482642,
+      "exposed_dma_cycles": 149280,
+      "total_cycles": 6313510
+    },
+    "performance": {
+      "effective_fps": 310.69,
+      "effective_latency_ms": 3.22,
+      "efficiency_pct": 9.6
+    },
+    "power_aggregate": {
+      "power_eff_fps_mW": 7637.54,
+      "power_30fps_mW": 737.47
+    },
+    "power_components": {
+      "baseline_power_eff_fps_mW": 7637.54,
+      "baseline_power_30fps_mW": 737.47,
+      "components": {
+        "mac_unit": {
+          "power_eff_fps_zeroed_mW": 6513.06,
+          "delta_mW": 1124.4799999999996,
+          "fraction_of_total": 0.14723065280181832,
+          "delta_mW_at_30fps": 108.57818952175697
+        },
+        "non_mac_unit": {
+          "power_eff_fps_zeroed_mW": 5107.09,
+          "delta_mW": 2530.45,
+          "fraction_of_total": 0.33131741372221946,
+          "delta_mW_at_30fps": 244.3366530977252
+        },
+        "dmem_imem": {
+          "power_eff_fps_zeroed_mW": 4852.09,
+          "delta_mW": 2785.45,
+          "fraction_of_total": 0.3647051275672533,
+          "delta_mW_at_30fps": 268.9590904270223
+        },
+        "ocram": {
+          "power_eff_fps_zeroed_mW": 7269.44,
+          "delta_mW": 368.10000000000036,
+          "fraction_of_total": 0.04819614692689012,
+          "delta_mW_at_30fps": 35.54321247417366
+        },
+        "ddr": {
+          "power_eff_fps_zeroed_mW": 6808.5,
+          "delta_mW": 829.04,
+          "fraction_of_total": 0.1085480403375956,
+          "delta_mW_at_30fps": 80.05092330776664
+        },
+        "bus_noc": {
+          "power_eff_fps_zeroed_mW": 7637.54,
+          "delta_mW": 0.0,
+          "fraction_of_total": 0.0,
+          "delta_mW_at_30fps": 0.0
+        }
+      }
+    },
+    "model_stats": {
+      "macs_bn": 11.394,
+      "model_size_MB": 11.864
+    },
+    "memory": {
+      "max_ddr_kB": 12462.91,
+      "max_ddr_weights_kB": 0.0,
+      "max_ddr_io_kB": 12462.91,
+      "max_ocr_kB": 1000.0,
+      "max_ocr_weights_kB": 353.5,
+      "max_ocr_io_kB": 634.5,
+      "ddr_read_MB": 53.0,
+      "ddr_write_MB": 0.0
+    },
+    "vidir_path": "/work/transformer_config_sweep/sweep_out/bev_30/BevformerTiny.vidir"
+  },
+  {
+    "tag": "bev_35",
+    "params": {
+      "tag": "bev_35",
+      "out": "/work/transformer_config_sweep/sweep_out/bev_35",
+      "num_layers_enc": 3,
+      "num_layers_dec": 6,
+      "bev_h": 35,
+      "bev_w": 35,
+      "embed_dims": 256
+    },
+    "error": null,
+    "cycles": {
+      "mac_cycles": 5101429,
+      "non_mac_cycles": 1536369,
+      "exposed_dma_cycles": 359340,
+      "total_cycles": 6997138
+    },
+    "performance": {
+      "effective_fps": 280.82,
+      "effective_latency_ms": 3.56,
+      "efficiency_pct": 9.47
+    },
+    "power_aggregate": {
+      "power_eff_fps_mW": 7064.93,
+      "power_30fps_mW": 754.75
+    },
+    "power_components": {
+      "baseline_power_eff_fps_mW": 7064.93,
+      "baseline_power_30fps_mW": 754.75,
+      "components": {
+        "mac_unit": {
+          "power_eff_fps_zeroed_mW": 5955.55,
+          "delta_mW": 1109.38,
+          "fraction_of_total": 0.15702632580931447,
+          "delta_mW_at_30fps": 118.5156194045801
+        },
+        "non_mac_unit": {
+          "power_eff_fps_zeroed_mW": 4608.73,
+          "delta_mW": 2456.2000000000007,
+          "fraction_of_total": 0.3476609110069032,
+          "delta_mW_at_30fps": 262.39707258246017
+        },
+        "dmem_imem": {
+          "power_eff_fps_zeroed_mW": 4349.79,
+          "delta_mW": 2715.1400000000003,
+          "fraction_of_total": 0.3843123711062955,
+          "delta_mW_at_30fps": 290.05976209247655
+        },
+        "ocram": {
+          "power_eff_fps_zeroed_mW": 6676.84,
+          "delta_mW": 388.09000000000015,
+          "fraction_of_total": 0.054931895998969575,
+          "delta_mW_at_30fps": 41.45984850522229
+        },
+        "ddr": {
+          "power_eff_fps_zeroed_mW": 6668.81,
+          "delta_mW": 396.1199999999999,
+          "fraction_of_total": 0.05606849607851739,
+          "delta_mW_at_30fps": 42.317697415261
+        },
+        "bus_noc": {
+          "power_eff_fps_zeroed_mW": 7064.93,
+          "delta_mW": 0.0,
+          "fraction_of_total": 0.0,
+          "delta_mW_at_30fps": 0.0
+        }
+      }
+    },
+    "model_stats": {
+      "macs_bn": 12.437,
+      "model_size_MB": 12.221
+    },
+    "memory": {
+      "max_ddr_kB": 14280.01,
+      "max_ddr_weights_kB": 0.0,
+      "max_ddr_io_kB": 14280.01,
+      "max_ocr_kB": 996.0,
+      "max_ocr_weights_kB": 353.5,
+      "max_ocr_io_kB": 638.0,
+      "ddr_read_MB": 28.0,
+      "ddr_write_MB": 0.0
+    },
+    "vidir_path": "/work/transformer_config_sweep/sweep_out/bev_35/BevformerTiny.vidir"
+  },
+  {
+    "tag": "bev_40",
+    "params": {
+      "tag": "bev_40",
+      "out": "/work/transformer_config_sweep/sweep_out/bev_40",
+      "num_layers_enc": 3,
+      "num_layers_dec": 6,
+      "bev_h": 40,
+      "bev_w": 40,
+      "embed_dims": 256
+    },
+    "error": null,
+    "cycles": {
+      "mac_cycles": 5524693,
+      "non_mac_cycles": 1596852,
+      "exposed_dma_cycles": 359340,
+      "total_cycles": 7480885
+    },
+    "performance": {
+      "effective_fps": 262.91,
+      "effective_latency_ms": 3.8,
+      "efficiency_pct": 9.73
+    },
+    "power_aggregate": {
+      "power_eff_fps_mW": 7158.02,
+      "power_30fps_mW": 816.78
+    },
+    "power_components": {
+      "baseline_power_eff_fps_mW": 7158.02,
+      "baseline_power_30fps_mW": 816.78,
+      "components": {
+        "mac_unit": {
+          "power_eff_fps_zeroed_mW": 6018.89,
+          "delta_mW": 1139.13,
+          "fraction_of_total": 0.15914037680811174,
+          "delta_mW_at_30fps": 129.9826769693295
+        },
+        "non_mac_unit": {
+          "power_eff_fps_zeroed_mW": 4699.55,
+          "delta_mW": 2458.4700000000003,
+          "fraction_of_total": 0.34345671009580864,
+          "delta_mW_at_30fps": 280.52857167205457
+        },
+        "dmem_imem": {
+          "power_eff_fps_zeroed_mW": 4416.69,
+          "delta_mW": 2741.330000000001,
+          "fraction_of_total": 0.38297322443916065,
+          "delta_mW_at_30fps": 312.80487025741763
+        },
+        "ocram": {
+          "power_eff_fps_zeroed_mW": 6717.37,
+          "delta_mW": 440.65000000000055,
+          "fraction_of_total": 0.06156031975322792,
+          "delta_mW_at_30fps": 50.2812379680415
+        },
+        "ddr": {
+          "power_eff_fps_zeroed_mW": 6779.55,
+          "delta_mW": 378.47000000000025,
+          "fraction_of_total": 0.05287356000681756,
+          "delta_mW_at_30fps": 43.18606634236845
+        },
+        "bus_noc": {
+          "power_eff_fps_zeroed_mW": 7158.02,
+          "delta_mW": 0.0,
+          "fraction_of_total": 0.0,
+          "delta_mW_at_30fps": 0.0
+        }
+      }
+    },
+    "model_stats": {
+      "macs_bn": 13.641,
+      "model_size_MB": 12.633
+    },
+    "memory": {
+      "max_ddr_kB": 16376.47,
+      "max_ddr_weights_kB": 0.0,
+      "max_ddr_io_kB": 16376.47,
+      "max_ocr_kB": 995.38,
+      "max_ocr_weights_kB": 353.5,
+      "max_ocr_io_kB": 641.75,
+      "ddr_read_MB": 28.6,
+      "ddr_write_MB": 0.0
+    },
+    "vidir_path": "/work/transformer_config_sweep/sweep_out/bev_40/BevformerTiny.vidir"
+  },
+  {
+    "tag": "bev_45",
+    "params": {
+      "tag": "bev_45",
+      "out": "/work/transformer_config_sweep/sweep_out/bev_45",
+      "num_layers_enc": 3,
+      "num_layers_dec": 6,
+      "bev_h": 45,
+      "bev_w": 45,
+      "embed_dims": 256
+    },
+    "error": null,
+    "cycles": {
+      "mac_cycles": 6002557,
+      "non_mac_cycles": 1665285,
+      "exposed_dma_cycles": 167712,
+      "total_cycles": 7835554
+    },
+    "performance": {
+      "effective_fps": 251.15,
+      "effective_latency_ms": 3.98,
+      "efficiency_pct": 10.22
+    },
+    "power_aggregate": {
+      "power_eff_fps_mW": 7747.88,
+      "power_30fps_mW": 925.49
+    },
+    "power_components": {
+      "baseline_power_eff_fps_mW": 7747.88,
+      "baseline_power_30fps_mW": 925.49,
+      "components": {
+        "mac_unit": {
+          "power_eff_fps_zeroed_mW": 6550.84,
+          "delta_mW": 1197.04,
+          "fraction_of_total": 0.1544990371559704,
+          "delta_mW_at_30fps": 142.98731389747905
+        },
+        "non_mac_unit": {
+          "power_eff_fps_zeroed_mW": 5228.08,
+          "delta_mW": 2519.8,
+          "fraction_of_total": 0.3252244484942978,
+          "delta_mW_at_30fps": 300.9919748369877
+        },
+        "dmem_imem": {
+          "power_eff_fps_zeroed_mW": 4913.96,
+          "delta_mW": 2833.92,
+          "fraction_of_total": 0.3657671517886183,
+          "delta_mW_at_30fps": 338.5138413088484
+        },
+        "ocram": {
+          "power_eff_fps_zeroed_mW": 7283.45,
+          "delta_mW": 464.4300000000003,
+          "fraction_of_total": 0.05994284888253307,
+          "delta_mW_at_30fps": 55.47650721229553
+        },
+        "ddr": {
+          "power_eff_fps_zeroed_mW": 7015.17,
+          "delta_mW": 732.71,
+          "fraction_of_total": 0.09456909502986624,
+          "delta_mW_at_30fps": 87.52275175919091
+        },
+        "bus_noc": {
+          "power_eff_fps_zeroed_mW": 7747.88,
+          "delta_mW": 0.0,
+          "fraction_of_total": 0.0,
+          "delta_mW_at_30fps": 0.0
+        }
+      }
+    },
+    "model_stats": {
+      "macs_bn": 15.005,
+      "model_size_MB": 13.1
+    },
+    "memory": {
+      "max_ddr_kB": 21731.1,
+      "max_ddr_weights_kB": 2978.07,
+      "max_ddr_io_kB": 18753.03,
+      "max_ocr_kB": 999.88,
+      "max_ocr_weights_kB": 353.5,
+      "max_ocr_io_kB": 646.25,
+      "ddr_read_MB": 58.0,
+      "ddr_write_MB": 0.0
+    },
+    "vidir_path": "/work/transformer_config_sweep/sweep_out/bev_45/BevformerTiny.vidir"
+  }
+]
