@@ -81,7 +81,7 @@ frequency=1000000000
 - **チップは3Dスタック構造(アナログ28nm・デジタル5nm)であることが、出力例の"Process Nodes"欄に直接記載されている**("Process Nodes | Analog 28nm, Digital 5nm")。
 - **`mythic-ppa-estimators`自体には、ユーザーがハードウェア構成(`nMPs`・`frequency`等)を指定するコマンドラインオプションが存在しない。** `--help`の出力は`[-h] [--functional-simulation] [--estimate-performance] [--estimate-power] [--power-inference-rate RATE] [--allow-fps-over-max] model_artifact_path`のみであり、HW構成を渡す引数は無い。つまり`nMPs`・`frequency`等の値は、**コンパイル済みアーティファクトに焼き込まれた値がそのまま報告されているだけ**であり、`mythic-ppa-estimators`を実行するユーザー自身がこれらの値を自由に選べる訳ではない。本レポートで実際に行ってきたこと(§5.6・§5.7で`nMPs`を4608まで、`OCRAM0`を1 GBまで変えるなど)は、この公式CLIの外側にある、より低レベルな`vnnmap --system_cfg`直接指定によるものであり、公式CLIが実運用で生成しうる値の範囲を超えている可能性がある。
 
-**1. チップの物理構成。** NPUデータシート§3.1によれば、M2000は以下の階層構造を持つ:
+**1. チップの物理構成(製品全体の説明であり、このSDKが同じ構造を実装している確認は取れていない)。** NPUデータシート§3.1によれば、M2000は以下の階層構造を持つ:
 
 ```
 Host SoC(DRAM Controller・SRAM・ホスト側プロセッサ)
@@ -94,11 +94,28 @@ Mythic M2000 NPU chiplet
   └─ SoC Subsystem(DPU・Control Processor・共有SRAM・ホストインターフェース)
 ```
 
-重要な点として、**M2000チップ自体にはDRAMコントローラが存在しない**(NPUデータシートFigure 3のブロック図で、DRAM Controllerは"Host SoC"側にのみ描かれている)。M2000チップ側のメモリは全て「SRAM」(NPU Tile内の共有SRAM、SoC Subsystem内の共有SRAM)と呼ばれており、DRAMという語はホスト側にしか出てこない。ここから、本レポートの`[sys]` configにある`DDR`パラメータは、M2000チップ上のメモリではなく、**PCIe経由で接続されたホスト側のDRAMを指している可能性が高い**と考えられる(データシートに明示的な対応記述はなく、ブロック図からの推論。なお`GEN2 User Guide.pdf`のResNet-50実行例の注記は「PCIe転送オーバーヘッドは含まない」と明記しており、これは本レポートの`DDR`パラメータが表すオーバーヘッドとは別の話である可能性もあり、完全には整理できていない)。
+**重要な注意点: このNPUデータシートには、他の2資料(PPA Estimatorデータシート・GEN2 User Guide)と違い、対応するSDKバージョンの記載が無い。** つまりこれはM2000という製品全体のハードウェア説明であり、本レポートで使用しているSDKのシミュレータ(`vnnmap`)がこの構造を忠実に実装していることを確認する手段は無い。「M2000チップ自体にはDRAMコントローラが存在しない(Figure 3、DRAM Controllerは"Host SoC"側にのみ描かれている)」という観察から、本レポートの`[sys]` configにある`DDR`パラメータがPCIe経由のホスト側DRAMを指しているのではないかという推測を述べたが、これも同様に製品レベルの説明からの推論であり、SDK内部で裏付けられたものではない。
 
-**2. ACEタイル構成も実行例で確認できる。** GEN2 User GuideのResNet-50実行例は"Number of ACEs: 24"・"Minimum Theoretical ACE Execution Time (With Even Parallelization Across 24 ACEs)"と報告しており、これはPPA Estimatorデータシート§5の"24Ace6Tile: 24 ACEs arranged in 6 ACE Tiles"というvirtual platform名と整合する(ACE Tileは4 ACEずつのグループ)。
+**1.5 SDK自身に同梱されている、他モデル用の`[sys]` cfgファイルとの比較(SDK内部だけから確認できる、より確実な情報)。** データシートの物理構成図を離れて、SDKが実際に出荷している設定ファイルだけを比較すると、以下が確認できる:
 
-**未確認のまま残る事項**: `mCluster`・`pCluster`・`xTile`という名称は、いずれの公式資料にも登場しない。`nMPs`(=288、BEVFormer-Tinyの場合)が`pCluster`(=12)× 24という形に分解できる(24 v-MP/クラスタ相当)ことから、v-MPコアを内部的にグループ化するための`vnnmap`(デジタル側シミュレータ)固有のスケジューリング単位である可能性はあるが、これを裏付ける公式記述はなく、確認できていない。また、`OCRAM0`/`OCRAM1`という2つのオンチップメモリ容量パラメータが、NPU Tile内の共有SRAMとSoC Subsystem内の共有SRAMという、データシートの図に描かれている2つの異なるSRAMプールにそれぞれ対応するのではないかという仮説も考えられるが、これも名称レベルでの対応確認はできていない。
+| キー | bevformer.cfg | resnet50.cfg | yolopx.cfg | yolov8.cfg | yolov8pose.cfg |
+|---|---|---|---|---|---|
+| `nMPs` | **288** | 1 | 1 | 4 | 8 |
+| `frequency` | **2,000,000,000**(2 GHz) | 1,000,000,000(1 GHz) | 1,000,000,000 | 1,000,000,000 | 1,000,000,000 |
+| `OCRAM0` | **33,554,432**(32 MB) | 0 | 0 | 0 | 0 |
+| `DDR` | **107,374,182,400**(100 GB) | 0 | 0 | 0 | 0 |
+| `mCluster` | **1** | (キー無し) | (キー無し) | (キー無し) | (キー無し) |
+| `pCluster` | **12** | (キー無し) | (キー無し) | (キー無し) | (キー無し) |
+| `xTile` | **2** | (キー無し) | (キー無し) | (キー無し) | (キー無し) |
+| `DDRConfig` | (キー無し) | 100 | 100 | 100 | 100 |
+
+**`mCluster`・`pCluster`・`xTile`、および非ゼロの`DDR`・`OCRAM0`は、SDKが同梱する5モデルの`[sys]` cfgのうち、BEVFormer-Tinyにしか存在しない。** 他の4モデル(ResNet-50・YOLOPX・YOLOv8・YOLOv8-Pose)はいずれも`nMPs`が1〜8という小さい値で、これらのキー自体を持たない。なお、SDKには大規模言語モデル(Pythia-70m)も同梱されているが、`GEN2 User Guide.pdf`が明記する通りこのSDKバージョンではPythiaのコンパイル・PPA推定自体が非対応であり、対応する`[sys]` cfgファイル自体が存在しない。
+
+これはデータシートの物理構成とは無関係に、**SDKが実際に出荷しているファイルの比較だけから確認できる事実**である。したがって言えることは: 「`mCluster`・`pCluster`・`xTile`はBEVFormer-Tinyのような大規模なデジタル処理(`nMPs=288`)が必要なモデルにのみ関係する設定値である」という限定的な事実であり、これがNPUデータシートの「12 NPU Tile」という製品スペックと物理的に対応しているかどうかは、SDK内部の情報だけでは判別できない(`pCluster=12`という値が製品スペックの"12"と一致するのは、単なる数値の一致である可能性が高い)。
+
+**2. ACEタイル構成も実行例で確認できる。** GEN2 User GuideのResNet-50実行例は"Number of ACEs: 24"・"Minimum Theoretical ACE Execution Time (With Even Parallelization Across 24 ACEs)"と報告しており、これはPPA Estimatorデータシート§5の"24Ace6Tile: 24 ACEs arranged in 6 ACE Tiles"というvirtual platform名と整合する(ACE Tileは4 ACEずつのグループ)。ただし、これはResNet-50(Analog側のみ使う、小規模なモデル)の実行例であり、BEVFormer-Tinyが実際にどのACEタイル構成で動いているかは別途確認が必要である。
+
+**未確認のまま残る事項**: `mCluster`・`pCluster`・`xTile`という名称の物理的な意味そのものは、いずれの公式資料にも記載が無い。`nMPs`(=288、BEVFormer-Tinyの場合)が`pCluster`(=12)× 24という形に分解できることから、v-MPコアを内部的にグループ化するための`vnnmap`固有のスケジューリング単位である可能性はあるが、これを裏付ける記述は無く、確認できていない。また、`OCRAM0`/`OCRAM1`という2つのオンチップメモリ容量パラメータが、NPU Tile内の共有SRAMとSoC Subsystem内の共有SRAMという、データシートの図に描かれている2つの異なるSRAMプールにそれぞれ対応するのではないかという仮説も、上記の理由(データシートの構成図自体がこのSDKでの実装を保証しない)により確認できていない。
 
 さらに、`nMPs`/`frequency`の対応自体が上記のように確認できた一方で、**`mythic-ppa-estimators`(公式CLI)というシミュレータそのものが実チップの物理的挙動を正確に反映しているかどうかは別問題として残る。** `Mythic_PPA_Estimator_Datasheet_v0.4.pdf` §1 Overviewは、この推定器を「cycle-accurateなRTLシミュレーションではなく、高レベルの抽象化を行った機能シミュレータであり、タイミング精度・電力推定・コンパイラ統合には内在的な限界がある」と明記している。したがって、本レポートの§5.6・§5.7で`nMPs`・`OCRAM0`等を変化させた際の実測挙動が、実チップの物理的挙動を正確に反映しているという保証もない。
 

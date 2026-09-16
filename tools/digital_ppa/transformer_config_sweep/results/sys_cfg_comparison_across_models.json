@@ -1,0 +1,18 @@
+{
+  "description": "Comparison of [sys] cfg files shipped with the SDK across all 5 models that support PPA estimation (system_configs/*.cfg, read directly - no disassembly). Pythia-70m is also shipped but has no [sys] cfg since compilation/PPA estimation is unsupported for it per GEN2 User Guide.pdf.",
+  "source_paths": {
+    "bevformer": "mythic_sdk/v26.05.0/_extracted_compiler/vnnsdk_scripts/system_configs/bevformer.cfg",
+    "resnet50": "mythic_sdk/v26.05.0/_extracted_compiler/vnnsdk_scripts/system_configs/resnet50.cfg",
+    "yolopx": "mythic_sdk/v26.05.0/_extracted_compiler/vnnsdk_scripts/system_configs/yolopx.cfg",
+    "yolov8": "mythic_sdk/v26.05.0/_extracted_compiler/vnnsdk_scripts/system_configs/yolov8.cfg",
+    "yolov8pose": "mythic_sdk/v26.05.0/_extracted_compiler/vnnsdk_scripts/system_configs/yolov8pose.cfg"
+  },
+  "cfgs": {
+    "bevformer": {"mCluster": 1, "pCluster": 12, "nMPs": 288, "OCRAM0": 33554432, "OCRAM1": 1048576, "DDR": 107374182400, "nomemFirstGraphInput": true, "nomemGraphOutput": false, "frequency": 2000000000, "nBatch": 1, "xTile": 2},
+    "resnet50": {"nMPs": 1, "OCRAM0": 0, "OCRAM1": 2097152, "DDR": 0, "frequency": 1000000000, "DDRConfig": 100},
+    "yolopx": {"nMPs": 1, "OCRAM0": 0, "OCRAM1": 12582912, "DDR": 0, "frequency": 1000000000, "DDRConfig": 100},
+    "yolov8": {"nMPs": 4, "OCRAM0": 0, "OCRAM1": 24117248, "DDR": 0, "frequency": 1000000000, "DDRConfig": 100, "nomemGraphOutput": true},
+    "yolov8pose": {"nMPs": 8, "OCRAM0": 0, "OCRAM1": 17825792, "DDR": 0, "frequency": 1000000000, "DDRConfig": 100, "nomemGraphOutput": true}
+  },
+  "finding": "mCluster/pCluster/xTile, and nonzero DDR/OCRAM0, appear ONLY in bevformer.cfg among the 5 shipped models. All other models use nMPs in {1,4,8} and frequency=1GHz; only BEVFormer uses nMPs=288 and frequency=2GHz. Pythia-70m has no [sys] cfg at all (unsupported for compilation/PPA estimation in this SDK version)."
+}
