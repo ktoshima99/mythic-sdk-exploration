@@ -1,0 +1,30 @@
+{
+  "description": "Linear regression of DDR power-component contribution (delta_mW_at_30fps) against DDR Read/Write (MB), fit across all 25 sweep points (sweep_transformer_config.json + ocram_threshold_bisection.json + bev_25_50_gap_fill.json + bev_large_grid_sweep.json). Also includes the readDivDDR power-law fit from ddr_bandwidth_probe.json used to back out the implicit default divisor.",
+  "power_regression": {
+    "model": "delta_mW_at_30fps = a*read_MB + b*write_MB + c",
+    "n_points": 25,
+    "a_read_mW_per_MB": 1.500075,
+    "b_write_mW_per_MB": 2.910047,
+    "c_intercept_mW": -8.3195,
+    "r_squared": 1.0,
+    "write_to_read_cost_ratio": 1.9399343366165025,
+    "derived_energy_per_byte": {
+      "read_pJ_per_byte": 47.69,
+      "write_pJ_per_byte": 92.51,
+      "conversion": "power_mW * 1e-3 [W] / 30 [fps] / (1024*1024) [bytes/MB] * 1e12 [pJ/J]"
+    }
+  },
+  "cycle_powerlaw_fit": {
+    "model": "exposed_dma_cycles = B / readDivDDR^n",
+    "source_points": "ddr_bandwidth_probe.json (readDivDDR override = 8, 16, 32 vs implicit baseline)",
+    "n_exponent": 1.0247,
+    "B": 2.2431e9,
+    "implied_default_readDivDDR": 4.179,
+    "residual_check": {
+      "k8_actual": 266211417, "k8_predicted": 266341424,
+      "k16_actual": 131036053, "k16_predicted": 130908161,
+      "k32_actual": 64310618, "k32_predicted": 64342025
+    },
+    "bandwidth_conversion_caveat": "Converting readDivDDR=4.18 bytes/cycle at 2GHz to ~8.4 GB/s assumes the cycle model's internal byte-count unit maps 1:1 onto vnnmap's reported DDR Read (MB) field. A magnitude cross-check (comparing the fitted B constant against actual DDR Read MB for the bev_200 baseline) showed a >10x discrepancy, so this GB/s figure should be treated as approximate, not confirmed."
+  }
+}
