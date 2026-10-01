@@ -357,6 +357,8 @@ def __call__(self, value):
 
 `eval_trained` が統計収集を含まないのは、`eval_onnx_step`（§4.2）が `run_evaluator` を直接呼び `Session._stats` を経由しないため。精度シミュレーションを GPU で回す運用は維持できる。
 
+> `to_training` の後段である `train`（QAT 本体）がなぜ数十GBの GPU メモリを要するか（Mythic 層の保持活性倍率・activation checkpoint の効果を実測）は [08_retraining_gpu_memory.md](08_retraining_gpu_memory.md) にまとめた。
+
 > 上記実測の成果物（`structural-1600x900.onnx`, `mythic-1600x900-untrained.onnx`, `metrics_untrained.json`, 各ステップのログ）はホスト `/mnt/nvme_scratch/mythic_untrained_probe/` に保存。
 
 #### 4.7.5 フル nuScenes val での再実測（mini との比較）

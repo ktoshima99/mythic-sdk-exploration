@@ -19,6 +19,7 @@ Mythic M2000（フラッシュ／NVM メモリセルをアナログ乗算器と�
 | 06 | [to_structural.md](conversion_steps/to_structural.md) | **`to_structural` ステップ**（構造整理・on/off-chip 宣言） | 解析済（SDK コンテナ側、6 モデル全実装 + BEVFormer/resnet50 実測あり） |
 | 08 | [to_acm.md](conversion_steps/to_acm.md) | **`to_acm` ステップ**（MYTHIC→BCM 変換・重み量子化の実行・BCM忠実度`munc_fp`固定） | 解析済（SDK コンテナ側、6 モデル共通実装 + YOLOPX/BEVFormer 実artifact実測あり） |
 | 09 | [create_artifact.md](conversion_steps/create_artifact.md) | **`create_artifact` ステップ**（BCM→COMPILER 変換・忠実度`munc_digital`固定・off/on-chip分割・tar.gz packaging） | 解析済（SDK コンテナ側、6 モデル共通実装 + YOLOPX/BEVFormer 実artifact実測あり） |
+| 08 | [08_retraining_gpu_memory.md](08_retraining_gpu_memory.md) | **`train`（QAT本体）の GPU メモリ要因**（なぜ数十GB必要か。activation checkpoint・Mythic層の保持活性倍率を実測） | 解析済（SDK コンテナ側、BEVFormer-tiny 1600x900 実測あり。この表の番号列は実ファイル名の連番ではなくカテゴリ番号であり、`conversion_steps/to_acm.md` と番号が重複している点に注意） |
 
 ### 解析手法
 - **コンパイラコンテナ**: `compiler_m2000.tar`（OCI イメージ）を `docker load` し、`compilerd-bin:1.5.2` から生 Python ソース約 27,000 行を `_extracted_compiler/` に抽出。doc 01/02、および doc 03 Part B はこれに基づく。
