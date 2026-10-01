@@ -27,7 +27,7 @@ to_structural → to_training → train → post_retraining_simplification → e
 | ステップ | 役割 | GPU使用 | forward回数 | backward | メモリ支配要因 | 実測メモリ・時間 |
 |---|---|---|---|---|---|---|
 | **to_structural** | グラフ再構成のみ（量子化なし） | 不要 | 無し | 無し | ONNXロードのみ（約137MB） | 約1分（[03_accuracy_simulation.md](03_accuracy_simulation.md) §4.7.4） |
-| **to_training** | 統計収集でレンジ・スケール(pFSR/iFSR/DSF)を確定し、ONNX上でMythic opに書き換え（(a)グラフ再構成+(b)統計確定+(c)fake-quant opへの変換、いずれも静的） | 統計収集TorchNetが既定でGPU | 有り、複数回（`stat_n_samples_default: 200`、`bevformer_tiny.yaml`） | **無し**（`torch.no_grad()` 内） | **全エッジの中間活性がobserverにより保持される**（§4） | 43.90GiBでOOM（45GiB空きGPUでも）。`device_name=cpu`で回避、約35〜42分（03 §4.7.4） |
+| **to_training** | 統計収集でレンジ・スケール(pFSR/iFSR/DSF)を確定し、ONNX上でMythic opに書き換え（(a)グラフ再構成+(b)統計確定+(c)fake-quant opへの変換、いずれも静的） | 統計収集TorchNetが既定でGPU | 有り、**STATS_REQUIREDなopごとに繰り返し**（本実測では1回の`to_training`実行中に5回、§4.2） | **無し**（`torch.no_grad()` 内） | **全エッジの中間活性がobserverにより保持される。解放されず回を跨いで積み上がる**（§4） | 本実測で45GiB付近でOOM（44.39GiB GPU）。既存ログでは43.90GiBでOOM（45GiB空きGPUでも）。`device_name=cpu`で回避、約35〜42分（03 §4.7.4、§4.6） |
 | **train** | QAT本体。forwardのたびにfake-quant+ノイズを適用、STEでbackward | GPU（DDP対応） | 学習データ全体×24epoch | **有り** | **Mythic層の保持活性**（§3）。checkpointで調整可能 | 本ドキュメント §5 で実測 |
 | **to_acm** | 重みを1/256格子に実丸め、BCMに変換。統計収集あり | GPU | 有り（`stat_n_samples_default: 200`） | 無し | 統計収集TorchNet（to_trainingと同じ仕組みでOOMしうる） | 本ドキュメント §5 で実測（約24GB、サンプル数10で約3分37秒） |
 | **create_artifact** | 忠実度を`munc_digital`に固定し分割・packaging | 基本不要 | 原則無し | 無し | 小 | 短時間 |
@@ -81,9 +81,69 @@ checkpointed_torchnet:
 
 ---
 
-## 4. to_training が別の理由でOOMする機構
+## 4. to_training が別の理由でOOMする機構（詳細）
 
-`train` とは独立に、`to_training`（統計収集）はGPU上で別のメモリ問題を起こす。`EdgeMetadataObserver.__call__`（`_observers.py:25-34`）が**初回バッチの全エッジの値をclone()して保持し続ける**ため、`TorchNet.forward` の `delete_unused_edges` によるメモリ解放が無効化される。中間活性の総量は実測で**7.528 G要素 = FP32で28.04GiB**（最大エッジ `[6,256,232,400]` = 543.8MiB）。サンプル数(`stat_n_samples_default`)に比例しないため、サンプル数を減らしてもOOMは解消しない。回避策は `++to_training.device_name=cpu`（統計収集用TorchNetのみCPU化、精度シミュ本体には影響しない）。詳細は[03_accuracy_simulation.md](03_accuracy_simulation.md) §4.7.4。
+`train` とは独立に、`to_training`（統計収集）はGPU上で別のメモリ問題を起こす。本節は「量子化スケール決定で何を計算し、何を保持しているのか」「最大どれだけGPUメモリが必要か」「CPUで実行して問題ないか」を、コード解析と実測（本ドキュメントのための追加実測、GPU上で`to_training`を再現してOOMを直接観測）の両方から説明する。
+
+### 4.1 量子化スケール決定は2段階に分かれる — 「データ収集」と「スケール計算」
+
+`to_training` の量子化スケール決定（pFSR/iFSR/DSF の確定）は、実装上は次の2段に分かれており、**重いのは前者、軽いのは後者**である。
+
+1. **統計収集**（`StatsCollector.collect()`, `_stats_collector.py:172-189`）: モデルの**全エッジ**（`model.get_all_edges()` — 畳み込みや重みのエッジだけでなく、グラフ中のあらゆる中間テンソルを指す。`build_edge_observers(..., include_outputs=False)` が全エッジに対して無条件にobserverを割り当てる、`_stats_collector.py:79-104`）に対し、2種類のobserverを取り付けて`stat_n_samples_default`件のバッチを**実際に推論**させる（`collect_edge_data`, `torch.no_grad()`内）:
+   - **`HistogramObserver`**（`torch.ao.quantization.observer`標準クラス）: 固定ビン数のヒストグラムとmin/max/running統計を更新するだけ。**1エッジあたり数KB程度**で、バッチ数が増えても大きくならない。
+   - **`EdgeMetadataObserver`**（`_observers.py:16-34`）: shape/dtypeに加え、**「このエッジは全サンプルで値が変わらない定数か」を判定する**ために、**最初に流れてきたバッチの値をそのまま`.detach().clone()`して保持し続ける**（`_observers.py:32`）。2バッチ目以降は`torch.equal`で比較するだけだが、1バッチ目のクローンは`collect()`が終わるまで（実装上は`edge_observers`辞書が破棄されるまで）解放されない。
+   
+   この「全エッジ×1バッチ分のクローンを同時に保持する」コストが、[03_accuracy_simulation.md](03_accuracy_simulation.md) §4.7.4 が報告した**7.528 G要素 = FP32で28.04GiB**（最大エッジ`[6,256,232,400]`=543.8MiB）に相当する。
+
+2. **スケール計算**（`ScaleAllNodes`等, `munc/ops/scale_all_nodes.py`）: 上記の統計収集が返す`stats`辞書——エッジごとの`clip_min`/`clip_max`/`mean`/`std`/`shape`という**小さなスカラー値の集合**（`metadata_post_processor`/`make_histogram_post_processor`, `_stats_collector.py:277-387`）——だけを使い、グラフを辿ってスケールを伝播・分解する（`_scale_node`等, numpy/Python、GPU不要）。CSF（Composite Scale Factor）を`BreakFSRIntoPFSRAndIFSR`がpFSR（アナログ側）・iFSR（デジタル側）・DSFに分解するのもこの軽い段階に属する（[conversion_steps/to_training.md](conversion_steps/to_training.md) §7）。
+
+   **つまり「スケールを計算する演算」自体はGPUメモリをほとんど使わない。GPUメモリを食うのは、その計算に使う統計を得るために全エッジの生テンソルを一時的に(1バッチ分)保持しながら推論を回す工程である。**
+
+### 4.2 なぜ1回では済まないのか — STATS_REQUIREDなopごとに統計収集が繰り返される
+
+`BaseOp.collect_stats_if_needed`（`_base_op.py:157-174`）は、各opの`requires_stat_collection`が`STATS_REQUIRED`なら**既存の統計があっても必ず`self.stats.collect()`を呼び直す**（`STATS_EXISTING`なら既存統計を再利用）。`ScaleAllNodes`は`requires_stat_collection: STATS_REQUIRED`（`scale_all_nodes.py`の`_get_info`）であり、他にも複数のopが同条件を持つ。
+
+本ドキュメントのための追加実測（GPU、structural ONNXから`to_training`を実行、`stat_n_samples_default=20`）のログでは、**`Collecting required stats...`が合計5回出力**された。直前のopのログ行で位置を示すと:
+
+| # | 直前のopログ | 役割 |
+|---|---|---|
+| 1 | `Removing shape inference nodes...` | グラフクリーンアップ直後の最初の統計収集 |
+| 2 | `Marking relevant nodes as signed...`（1回目） | BatchNorm畳み込み・off-chip判定後 |
+| 3 | `Marking relevant nodes as signed...`（2回目） | 入力shift/scale注入後 |
+| 4 | `Balancing Concat inputs...` | Mul/MatMul/Softmax/Add/Concatへのスケール注入ノード挿入後 |
+| 5 | `Scaling all nodes...`（`ScaleAllNodes`本体） | 最終スケール確定 |
+
+ログ上の「直前の行」とそれを引き起こしたop定義の対応は、`to_training.md` §10.1 で既に指摘されている通り完全には一致しない場合がある[推測]が、**「1回のto_training実行中に統計収集(=全エッジクローン)が複数回走る」こと自体はログから直接確認できる事実**である。各回とも`stat_n_samples_default`件のバッチを新しい`TorchNet`で最初からやり直す（`StatsCollector.collect()`が毎回`self._make_torchnet()`で新規インスタンスを作る, `_stats_collector.py:163-166,175`）。
+
+### 4.3 実測: GPUメモリは5回の統計収集を経て階段状に積み上がり、最後の回でOOMする
+
+上記と同じ実測で、`nvidia-smi`のメモリ使用量を1秒間隔で記録し、ログの`Collecting required stats...`の出現位置と対応させた結果:
+
+| 区間 | GPUメモリ（nvidia-smi, 概算） | 備考 |
+|---|---|---|
+| 統計収集#1の直前 | 3 MiB | モデルロード・グラフ編集はほぼメモリを使わない |
+| 統計収集#1 完了時 | **31,985 MiB**（≈31.2GiB） | 03§4.7.4の28.04GiBに近い。ここで全エッジのクローンが一気に積まれる |
+| 統計収集#2〜#3 完了時 | 31,985〜31,991 MiB | ほぼ変化なし（この間のグラフ編集で増える有効エッジ数は小さい） |
+| 統計収集#4 完了時 | **41,139 MiB**（≈40.2GiB） | 直前にMul/MatMul/Softmax/Add/Concatへのスケール注入ノードが多数挿入され、インストゥルメント対象のエッジ数自体が増えたため |
+| 統計収集#5（ScaleAllNodes）進行中 | 45,389 MiB まで上昇して**OOM** | L40S 44.39GiB の天井に到達 |
+
+OOM発生箇所は本実測でも`_observers.py:32`の`self._constant_value = value.detach().clone()`そのもの（エラーメッセージ: `"this process has 44.32 GiB memory in use"`、GPU容量44.39GiB）。既存ログ（[03_accuracy_simulation.md](03_accuracy_simulation.md) §4.7.4）が報告する`Dropout.py:61`/`_observers.py:32`/`Div.py:23`という複数の発生箇所のばらつきも、「複数回の統計収集のどの回で、かつその回のどのエッジ処理中に天井を超えるか」が実行ごとに(スケジューリングやアロケータの断片化状況により)変わることの反映と考えられる[推測]。
+
+**重要な点**: 一度積まれたメモリは**次の統計収集が始まる前に明示的には解放されない**。`munc`パッケージ内を`grep`しても`torch.cuda.empty_cache()`の呼び出しは1件も無い。各`collect()`呼び出しのローカル変数（`torch_model`・`edge_observers`）はPython的にはスコープを抜ければ参照が切れるはずだが、PyTorchのキャッシングアロケータが確保済み領域を保持し続けるため、`nvidia-smi`上の使用量は前の回より下がることなく、**グラフが成長する(エッジが増える)たびに新たな積み増しが乗る**階段状の挙動になる。これが、既存ドキュメントが報告していた「43.90GiB」「35.05GiB」といった複数の異なるOOM時使用量（§4.7.4参照）が実行ごとに違う理由でもある——どの回でOOMするかで、積算される段数が変わる。
+
+### 4.4 サンプル数を減らしても解決しない理由
+
+`EdgeMetadataObserver`のクローンは**各collect()呼び出しの最初の1バッチ目**でのみ発生し、2バッチ目以降は比較のみ（§4.1）。したがって`stat_n_samples_default`を200→20に減らしても、各回の「1バッチ目クローン」のコストはそのまま残る。サンプル数が効くのは**処理時間**（バッチ数分の推論を回す時間）だけであり、**ピークメモリには効かない**。これが[03_accuracy_simulation.md](03_accuracy_simulation.md) §4.7.4が実測で確認した「200→20に減らしてもOOM」という結果の正確な理由である。
+
+### 4.5 最大どれくらいのGPUメモリが必要か
+
+本実測ではL40S(44.39GiB)が完全に空の状態でも、5回目の統計収集(ScaleAllNodes)の途中で45.4GiB付近に達してOOMした。**この回は途中で死んでいるため、仮に十分なメモリがあった場合の最終的なピークは本実測だけでは確定できない**。既存ログ（03§4.7.4）でも45GiB空きのGPUでOOMしていることから、**BEVFormer-tiny 1600x900の`to_training`をGPU上で完走させるには、48GB級GPUでも不足する可能性が高く、必要量は50GB以上になる可能性がある**[推測、本リポジトリではより大きいGPUでの検証はできていない]。少なくとも「`train`の既定ckpt設定(43.5GiB, §3-5参照)と同程度か、それ以上」の予算が必要になる。
+
+### 4.6 CPUで実行して問題ないか
+
+**精度への影響は無い。** `device_name`は`Session.__init__`内で`StatsCollector`のコンストラクタにのみ渡され（`_session.py:90,99`）、`StatsCollector._make_torchnet()`がこの値をそのまま`TorchNet(..., device_name=...)`に渡す（`_stats_collector.py:163-164`）。この経路は**統計収集専用のTorchNetインスタンスにしか影響せず**、`train`や`eval_trained`が使う別のTorchNetインスタンスには伝播しない。ヒストグラム（min/max/running累積）とメタデータ（shape/dtype/定数判定のための等値比較）はいずれも**デバイスに依存しない決定論的な演算**であり、CPU/GPUどちらで計算しても得られる`clip_min`/`clip_max`/`mean`/`std`の値は（浮動小数点演算順序の違いによる末尾ビットの差を除き）実質的に同一になる。したがって`++to_training.device_name=cpu`は**正確さを犠牲にせず、速度だけを犠牲にする**回避策である。
+
+CPUでも「全エッジ1バッチ分のクローンを5回積み上げる」という同じ構造のメモリ消費は起きるが、ホストRAM(本実測環境は248GB、使用中はわずか約14GB)はGPUの44GBクラスのVRAMより桁違いに大きいため、同じ消費量が**単に余裕を持って収まる**。CPUが「メモリ効率がよい」わけではなく、「使える容量が大きい」だけである点に注意。実測の所要時間は約35〜42分（mini, 20サンプル×複数回の統計収集を含む, 03§4.7.4）。
 
 ---
 
@@ -155,8 +215,12 @@ mini実測の `IterTime` を使い、フルnuScenes trainvalでの所要時間�
   - `configs/bevformer/bevformer_tiny.yaml`, `configs/bevformer/model_setup/tiny_1600x900.yaml`, `configs/common/base_config_generic.yaml`
   - `_torchnet.py:382-500,461-462`（forward, checkpoint wrapping, delete_unused_edges）
   - `_ace_model.py`, `_denali_ace_separable_model.py:441-447`（Mythic層の内部計算、fp16非対応）
-  - `_observers.py:25-34`（`EdgeMetadataObserver`のclone保持）
+  - `_observers.py:16-34`（`EdgeMetadataObserver`のclone保持、`HistogramObserver`との役割分担）
+  - `_stats_collector.py:25-61,79-104,112-209,277-387`（`collect_edge_data`の全エッジhook、`StatsCollector.collect()`が毎回新規TorchNetを作る、観測結果を小さい`stats`辞書に圧縮するpost-processor群）
+  - `munc/_base_op.py:157-174`（`collect_stats_if_needed`、`STATS_REQUIRED`なopは既存統計があっても必ず再収集）
+  - `munc/ops/scale_all_nodes.py`（`ScaleAllNodes`の`requires_stat_collection: STATS_REQUIRED`、スケール伝播自体は`stats`辞書上のnumpy演算）
+  - `_session.py:90,99`（`device_name`は`StatsCollector`にのみ伝播し、`train`/`eval_trained`の別TorchNetには影響しない）
   - `hydra_configs/training_model/denali.yaml`, `hydra_configs/noise_config/denali_training_model.yaml`
 - ベンダー資料: `mythic_sdk/v26.05.2/doc/user-guides/BEVFormer Retraining Guide.pdf` §1.17（checkpointプリセット・48GB GPU前提）、`mythic_sdk/v26.05.0/doc/reports/Model Summary Report.pdf` p.11-12（BEVFormerは8×A6000で学習）、`doc/user-guides/YOLO Retraining Guide.pdf` §2（i7/RAM64GB/VRAM48GB要求仕様）
 - 既存ドキュメント: [03_accuracy_simulation.md](03_accuracy_simulation.md) §4.7.4（to_trainingのOOM機構、28.04GiB活性の実測）、[conversion_steps/to_training.md](conversion_steps/to_training.md)、[conversion_steps/to_acm.md](conversion_steps/to_acm.md)
-- 本ドキュメントの追加実測ログ: 実行後に一時ファイルは削除済み（本文の数値がすべての実測結果）。再現する場合は本ドキュメント §5 の設定・コマンド断片を参照。
+- 本ドキュメントの追加実測: §3-5の7条件と§4-3の`to_training`メモリ階段は、いずれもホストL40S・コンテナ`mythic_bevformer_train`で本ドキュメント執筆時に実行して得た。ログ・`nvidia-smi`トレースは実行後に削除済みで、本文の数値・表が実測結果の記録そのもの。再現する場合は§3-5・§4のコマンド断片と設定キーを参照。
