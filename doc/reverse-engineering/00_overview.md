@@ -14,7 +14,8 @@ Mythic M2000（フラッシュ／NVM メモリセルをアナログ乗算器と�
 | 01 | [01_compilation.md](01_compilation.md) | **コンパイル** | 解析済（Compiler コンテナ側） |
 | 02 | [02_ppa_estimation.md](02_ppa_estimation.md) | **PPA 推定**（性能・電力・面積） | 解析済（Compiler コンテナ側） |
 | 03 | [03_accuracy_simulation.md](03_accuracy_simulation.md) | **精度シミュレーション** | 解析済（Part A: SDK コンテナ本体 / Part B: Compiler コンテナ部品） |
-| 04 | [to_training.md](conversion_steps/to_training.md) | **`to_training` ステップ**（structural→MYTHIC 変換・Mythicノード化・FSR/DSF分解） | 解析済（SDK コンテナ側、6 モデル共通実装 + BEVFormer 実測あり）。後続の `train`（重み学習ループ本体）は未解析 |
+| 04 | [to_training.md](conversion_steps/to_training.md) | **`to_training` ステップ**（structural→MYTHIC 変換・Mythicノード化・FSR/DSF分解） | 解析済（SDK コンテナ側、6 モデル共通実装 + BEVFormer 実測あり）。後続の `train` のうち DSF 学習・STE による勾配伝播は [quantization_scale_lifecycle.md](conversion_steps/quantization_scale_lifecycle.md) で解析済み。重み学習ループ・蒸留本体（`train.py`）は未解析 |
+| 04 | [quantization_scale_lifecycle.md](conversion_steps/quantization_scale_lifecycle.md) | **量子化スケール(WSF/pFSR/iFSR/DSF)のライフサイクル**（`to_structural`→`to_training`→`train`→`to_acm` を横断し、FP32モデルへの追加物・タイミング・値の決定方法を統合） | 解析済（SDK コンテナ側。`to_structural`/`to_training` は既存解析からの再編集、`train` の STE/勾配伝播部分は新規解析） |
 | 05 | [05_all_digital_ppa.md](05_all_digital_ppa.md) | **全デジタル実行時の PPA 推定** | 解析済（Compiler コンテナ側、BEVFormer-Tiny 実測あり。`vnnmap` バイナリ逆アセンブルにより cycle/電力モデルも確定） |
 | 06 | [to_structural.md](conversion_steps/to_structural.md) | **`to_structural` ステップ**（構造整理・on/off-chip 宣言） | 解析済（SDK コンテナ側、6 モデル全実装 + BEVFormer/resnet50 実測あり） |
 | 08 | [to_acm.md](conversion_steps/to_acm.md) | **`to_acm` ステップ**（MYTHIC→BCM 変換・重み量子化の実行・BCM忠実度`munc_fp`固定） | 解析済（SDK コンテナ側、6 モデル共通実装 + YOLOPX/BEVFormer 実artifact実測あり） |
