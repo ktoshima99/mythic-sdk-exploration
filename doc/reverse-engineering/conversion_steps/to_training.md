@@ -120,6 +120,21 @@ def to_training_step(config):
 
 `munc/_session.py:215-332`。全体は `op_conf_seq(...)` で1本につながれた munc `ops.*` の列（`munc/ops/` ディレクトリに個別ファイルとして実装、全体で100種類超あるopカタログのうち約45個をこのシーケンスで使用）。役割ごとに分類する。
 
+### 5.0 大きな括りで見た6フェーズ
+
+個々のopを見る前に、全体がどういう大きな流れになっているかを示す。§5.1〜5.6の節番号は、以下のフェーズに対応する。
+
+| フェーズ | やること | 対応する節 |
+|---|---|---|
+| ①演算種別の区分を確定する | `to_structural`では確定できなかった区分（`hwconfig`が無かったため）をここで確定。自動off-chip判定（`MarkUnsupportedOpsOffChip`）、depthwise convのデジタル指定（`MarkDepthwiseConvsAsDigital`） | §5.1、§6 |
+| ②表現形式をハードウェアに合わせる | 符号あり/符号なしの判定（`MarkSignedNodes`）と、不整合があればシフト補正（`AddInputShifting`） | §5.2（前半） |
+| ③重みを静的にスケールする（WSF） | `ConvGemmWeightScaling`が重みをハードウェア表現範囲に収め、打ち消し用の`CompositeScale`を一時的に挿入 | §5.2（後半） |
+| ④「スケールを変えてよい地点（壁）」を配置する | `InjectScalingOn*`系opがMul/MatMul/Softmax/Add/Sumの入出力にスケーリングノードを挿入。**この時点では値はまだ未確定、場所だけを決める** | §5.3 |
+| ⑤スケール値を確定し、物理ノブに配分する | `ScaleAllNodes`が④の壁を使ってエッジをグルーピングし共有スケールを計算 → `BreakFSRIntoPFSRAndIFSR`がCSFをpFSR/iFSR/WSF/DSFに分解 → `BreakDigitalScalesIntoFactors`がDSFを`multiplier`/`shift`化 | §5.4 |
+| ⑥グラフを最終形に単純化する | 4つのグルーピングop（`GroupMMAOps`等）が周辺ノードを親ノードへ吸収 → `ConvertNodesToMythic`がリネーム → `MakeDSFsTrainable`等が学習可能化のマーキング | §5.5、§5.6 |
+
+①〜④が「どこで（構造）」、⑤が「いくつ（数値）」、⑥が「後片付け（グラフの最終化）」に相当し、これは§1で導入した「どこで変えられるか（構造）といくつに変えるか（数値）を分離する」という設計方針（[quantization_scale_lifecycle.md §1](quantization_scale_lifecycle.md#1-根本思想--ハードウェア制約と量子化誤差の分離)）がそのまま反映された区分になっている。
+
 ### 5.1 前段: 標準グラフ整備（`_get_process_original_graph_ops` の再利用）
 
 `_session.py:184-206`。`to_structural` の後にもう一段、**同じグラフ整備関数**が走る（[to_structural.md](to_structural.md) §5.2 で予告した「op種別による自動off-chip判定はここで動く」の箇所）:
@@ -320,7 +335,7 @@ is_scaling_restoration_node:   SOFTMAX_SCALE_OUTPUT_RESTORATION, MUL_SCALE_OUTPU
 
 直感的には、クラスdocstringのExample 1/2（:98-114）が示す「スケーリングノードで区切られた区間」が1つのedge groupになる。Add等による分岐・合流を含むサブグラフも、スケーリングノードに触れない限り1つのgroupに融合される（Example 2のパターン）。
 
-ここでの「グルーピング」は§11（旧・未解明点3）の `GroupMMAOps`等（グラフをノード単位で融合しMythic表現に単純化するop群、§5.5）とは**無関係の別概念**である。`ScaleAllNodes`のグルーピングはスケール値を伝播するための一時的な集合演算であり、グラフ構造（ノード・エッジの実体）そのものは変更しない。
+ここでの「グルーピング」は `GroupMMAOps`等（グラフをノード単位で融合しMythic表現に単純化するop群、§5.5/§5.5.1で詳述）とは**無関係の別概念**である。`ScaleAllNodes`のグルーピングはスケール値を伝播するための一時的な集合演算であり、グラフ構造（ノード・エッジの実体）そのものは変更しない。
 
 #### ステップC: `_scale_node` — ノードごとの実書き込み
 
@@ -533,6 +548,21 @@ AdjustMythicSumActivation,
 ```
 
 `GroupMMAOps`（`munc/ops/group_mma_ops.py:11-19`）が「Conv/Gemmに付随する活性化・スケーリングノードを吸収し、Compiler-Ready表現（CRM）相当のグラフに単純化する」役割を担い、その直後に `ConvertNodesToMythic` が標準op名を書き換える。`GroupSumQMul` が Add/Sum と量子化Mulをグループ化して `MythicSum` に変換する（§10.1 の実測で確認）。
+
+#### 5.5.1 4つのグルーピングopの詳細（§11 旧・未解明点2の解消）
+
+`GroupMMAOps`/`GroupAddOutputOps`/`GroupSoftmaxScalingNodes`/`GroupMulMatMulScalingNodes`は、全て「周辺のスケーリング・活性化ノードを吸収してグラフを単純化する」という同じ目的を持つが、**対象演算の数学的性質（§4.7、[quantization_scale_lifecycle.md](quantization_scale_lifecycle.md)）に応じて、吸収先の形式が異なる**。
+
+| op | 対象 | 吸収先 | 吸収されるもの・形式 |
+|---|---|---|---|
+| `GroupMMAOps`（`munc/ops/group_mma_ops.py:12-159`） | `Conv`/`Gemm` | 同じノード（後に`MythicConv2d`/`MythicLinear`へ） | `CompositeScale`→`__adc_gain`/`__pFSR`/`__iFSR`属性、`DigitalScale`/`DIGITAL_SCALE_MULTIPLIER`/`DIGITAL_SCALE_DIVISOR`→`__multiplier`/`__shift`属性。後続の活性化（`ReLU`/`LeakyReLU`/`Swish`、無ければ`hardtanh`を暗黙付与）→`__activation`/`__activation_clip`/`LRELU_SLOPE`/`SWISH_ALPHA`/`ACTIVATION_SHIFT`属性 |
+| `GroupAddOutputOps`（`munc/ops/group_add_output_ops.py:12-137`） | `Add`/`Sum` | 同じノード（後に`GroupSumQMul`で`MythicSum`へ） | `ADD_SCALE_OUTPUT`型のスケーリングノードと活性化ノードを、分岐しない限り**連続して複数個**辿って吸収（`while True`ループ）。属性形式は`GroupMMAOps`と同様 |
+| `GroupSoftmaxScalingNodes`（`munc/ops/group_softmax_scaling_nodes.py:5-57`） | `Softmax` | 同じノード（属性のみ追加、`MythicSoftmax`への変換は`ConvertNodesToMythic`） | 前後のcancellation/restorationノード→`SOFTMAX_SCALE_IN_ATTR`/`SOFTMAX_SCALE_OUT_ATTR`属性として、**`__multiplier`/`__shift`のような固定小数点分解はせず単純な浮動小数点のまま**格納（§4.7の実装確認と整合）。元のFP32グラフに既存の非Mythic型Mulノード（例: Attentionの$1/\sqrt{d_k}$スケーリング）があれば、それも追加で乗算して吸収する |
+| `GroupMulMatMulScalingNodes`（`munc/ops/group_mul_matmul_scaling_nodes.py:16-60`） | 2テンソル入力の`Mul`（`is_mul_without_constant_inputs`）または`MatMul` | 同じノード（属性ではなく**新規のテンソル入力を追加**） | 前後のcancellation/restorationノードが保持するスケール値を、ノード自身に`mul_node.input.append(...)`で新しい入力として追加する。属性に押し込めないのは、2つの動的テンソルの積という性質上、固定の定数属性では表現できないため |
+
+対象演算の性質によって吸収先の形式が変わる理由は、§4.7で整理した透過性の分類と対応する。Conv/Gemm・Add/Sumは独自のWSF/pFSR/iFSR/DSF（またはそれに準じる単純なスケール）を持つため**属性**として吸収できるが、Softmaxは単一の浮動小数点属性で足りる一方、Mul/MatMulは2つの動的入力の積という構造上、属性ではなく**新しい入力テンソル**として吸収するしかない。
+
+なお、これらの集約が全て完了した後に走る`AdjustMythicSumActivation`（`munc/ops/adjust_mythicsum_activation.py:6-76`）は、集約そのものではない後処理である。`MythicSum`の活性化が`hardtanh`（対称クリップ）のままだが、実測統計上出力が常に非負だと判明した場合、`relu`（非対称、正の全レンジを使える）に切り替えて、無駄になっていた分解能を回収する最適化を行う。
 
 ### 5.6 後処理・学習可能化（`_session.py:320-330`）
 
@@ -797,7 +827,7 @@ input new285                      dtype=float32  shape=(64,)   # bias
 ### 未解明点
 
 1. `hardware_config_name` の既定値がモデルごとに `Boreas`/`Denali` のどちらに解決されるかは、BEVFormer（実測で `Denali` 確認）以外のモデルについて未確認。Hydra defaultsリストの解決順序（`torchnet@default_torchnet: default` が指す実体）を追う必要がある。
-2. `GroupMMAOps`/`GroupAddOutputOps`/`GroupSoftmaxScalingNodes`/`GroupMulMatMulScalingNodes` の4つのグルーピングopが `ConvertNodesToMythic` の前後でグラフをどう単純化するか、ノード単位の差分は未取得（§10.2は集計後のop種別カウント差分のみ）。これらは§5.4.2で深掘りした `ScaleAllNodes` のedge groupグルーピング（ノード・エッジの実体は変更しない一時的な集合演算）とは別物で、グラフ構造自体を変形するopである点が異なる。
+2. ~~`GroupMMAOps`/`GroupAddOutputOps`/`GroupSoftmaxScalingNodes`/`GroupMulMatMulScalingNodes` の4つのグルーピングopが `ConvertNodesToMythic` の前後でグラフをどう単純化するか~~ → **§5.5.1で解消**。各opの吸収対象・吸収先の形式（属性 or 新規入力テンソル）をソースコードから特定済み。これらは§5.4.2で深掘りした `ScaleAllNodes` のedge groupグルーピング（ノード・エッジの実体は変更しない一時的な集合演算）とは別物で、グラフ構造自体を変形するopである点が異なる（この区別自体は確認済み）。ノード単位の実測差分（§10.2は集計後のop種別カウント差分のみ）までは取得していない。
 3. `ConvertNodesToMythic`が付与する`__trainable_dsf`、`MakeDSFsTrainable`が付与する`__trainable`、両者が共有する`_constants.DEFAULT_DSF_PARAMETER_GROUP`という同一のグループID定数が、後続の `train` ステップ（TorchNetのoptimizer構築時）で具体的にどう解釈され、どのパラメータ群がどう束ねられるのかは範囲外（`train.py` 本体の解析が必要、[00_overview.md](../00_overview.md) §7 参照）。`PinLastOnChipConvDSF`/`PinLastOnChipMul`はこのうち特定条件のノードから`__trainable_dsf`を除去して学習対象外に固定する例外処理であることは§5.4.3で確認済み。
 4. 5モデル共通の `BreakFSRIntoPFSRAndIFSR` パラメータ（`half_iFSR_arr=[10.0], half_pFSR_arr=[2.5]`）がどのハードウェア特性・ノイズモデルから導出された値かは未調査。**§5.4.3で判明した追加情報**: この設定は候補を各1個に絞っており、結果としてpFSR=5.0/iFSR=20.0をモデル全体で固定する効果を持つ（実測で全Conv/Linearノードにわたり不変であることを確認済み）ことまでは分かったが、「なぜこの1点に固定するのか」という設計意図（ノイズ特性上の理由と推定）自体は依然未調査。
 5. §5.4.2で深掘りした `ScaleAllNodes` の `use_histogram=True` 経路（PyTorch標準`HistogramObserver`使用）と`noise_bits`ハードコード（常に`0`）は、grep確認の限り本SDK内で`ScaleAllNodes(...)`に`use_histogram`を渡す呼び出しが1件も無く（`munc/_session.py`は`scale_offchip_nodes`のみ指定）、既定の`False`から外れることがない＝実行パス上到達しない。`MODE_ALL_PATHS`と同様の「実装はあるが到達しない」コードであることは確認済みだが、`BreakFSRIntoPFSRAndIFSR`/`ConvGemmWeightScaling`側の同名フラグ（`use_histogram`, `ops/break_FSR_into_pFSR_and_iFSR.py:30`, `ops/conv_gemm_weight_scaling.py:24`）がモデル別configで有効化される可能性は未調査。
